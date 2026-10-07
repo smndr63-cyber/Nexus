@@ -1,0 +1,30 @@
+{
+  "name": "nexus-bot",
+  "version": "1.0.24",
+  "description": "NEXUS - kapsamlı Türkçe Discord sunucu botu",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --tls-min-v1.2 --tls-max-v1.2 dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "deploy": "node --tls-min-v1.2 --tls-max-v1.2 dist/index.js --deploy-only"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
+    "prism-media": "^1.3.5",
+    "ffmpeg-static": "^5.2.0",
+    "yt-dlp-wrap": "^2.3.12",
+    "opusscript": "^0.0.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "type": "commonjs"
+}

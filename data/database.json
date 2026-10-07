@@ -1,0 +1,104 @@
+{
+  "1542946231179804763": {
+    "config": {
+      "prefix": "!",
+      "commandRoles": {},
+      "commandUsers": {},
+      "logChannels": {},
+      "ignoredChannels": [],
+      "ignoredRoles": [],
+      "levelIgnoredChannels": [],
+      "levelIgnoredRoles": [],
+      "customCommands": {},
+      "features": {
+        "ai": false,
+        "music": true
+      },
+      "economyName": "Nexus Ekonomisi",
+      "currency": "◈",
+      "xpMin": 8,
+      "xpMax": 18,
+      "cooldown": 60000
+    },
+    "users": {
+      "1449902047347474492": {
+        "xp": 49,
+        "level": 0,
+        "messages": 5,
+        "voiceSeconds": 0,
+        "coins": 1750,
+        "bank": 0,
+        "warnings": 0,
+        "lastXp": 1791210523812,
+        "lastDaily": 1791208660959,
+        "lastWeekly": 1791208655777,
+        "lastWork": 0,
+        "inventory": []
+      },
+      "718580370924371989": {
+        "xp": 15,
+        "level": 0,
+        "messages": 1,
+        "voiceSeconds": 0,
+        "coins": 200,
+        "bank": 0,
+        "warnings": 0,
+        "lastXp": 1791210190917,
+        "lastDaily": 0,
+        "lastWeekly": 0,
+        "lastWork": 0,
+        "inventory": []
+      }
+    },
+    "cases": [],
+    "reactionRoles": [],
+    "giveaways": [],
+    "reminders": [],
+    "customCommands": {},
+    "stats": {}
+  },
+  "1526879060402114660": {
+    "config": {
+      "prefix": "!",
+      "commandRoles": {},
+      "commandUsers": {},
+      "logChannels": {},
+      "ignoredChannels": [],
+      "ignoredRoles": [],
+      "levelIgnoredChannels": [],
+      "levelIgnoredRoles": [],
+      "customCommands": {},
+      "features": {
+        "ai": false,
+        "music": true
+      },
+      "economyName": "Nexus Ekonomisi",
+      "currency": "◈",
+      "xpMin": 8,
+      "xpMax": 18,
+      "cooldown": 60000
+    },
+    "users": {
+      "468135399164739607": {
+        "xp": 11,
+        "level": 0,
+        "messages": 1,
+        "voiceSeconds": 0,
+        "coins": 100,
+        "bank": 0,
+        "warnings": 0,
+        "lastXp": 1791368703780,
+        "lastDaily": 0,
+        "lastWeekly": 0,
+        "lastWork": 0,
+        "inventory": []
+      }
+    },
+    "cases": [],
+    "reactionRoles": [],
+    "giveaways": [],
+    "reminders": [],
+    "customCommands": {},
+    "stats": {}
+  }
+}
