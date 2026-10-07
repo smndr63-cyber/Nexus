@@ -239,8 +239,32 @@ staffCmd('custom','Özel prefix komutu ekler/siler.',async c=>{const n=(c.intera
 // MUSIC
 simple('leave','Botu ses kanalından çıkarır.',async c=>{stop(c.guild.id);try{const v=require('@discordjs/voice');v.getVoiceConnection(c.guild.id)?.destroy();}catch{}return reply(c,'👋 Ses kanalından ayrıldım.')});
 simple('join','Botu ses kanalına çağırır.',async c=>{if(!c.member.voice.channel)return reply(c,'❌ Ses kanalına gir.');const v=require('@discordjs/voice');v.joinVoiceChannel({channelId:c.member.voice.channel.id,guildId:c.guild.id,adapterCreator:c.guild.voiceAdapterCreator as any,selfDeaf:true});return reply(c,`🔊 ${c.member.voice.channel} kanalına geldim.`)});
-simple('play','YouTube/Spotify şarkısı çalar veya kuyruğa ekler.',async c=>{try{const q=str(c,'query');const t=await playTrack(c.member,q);return reply(c,{embeds:[new EmbedBuilder().setColor(0x5865f2).setAuthor({name:'🎵 NEXUS • MÜZİK'}).setTitle('Parça kuyruğa eklendi').setDescription(`**${t.title}**${t.duration?`\n\n⏱️ ${t.duration} saniye`:''}`).setThumbnail(t.thumbnail||null).setFooter({text:'NEXUS Müzik Sistemi'}).setTimestamp()]});}catch(e:any){return reply(c,`❌ ${e.message}`,true)}},()=>base('play','YouTube/Spotify şarkısı çalar.').addStringOption(o=>o.setName('query').setDescription('Şarkı adı veya YouTube/Spotify URL').setRequired(true)),['çal']);
-simple('skip','Şarkıyı geçer.',async c=>reply(c,skip(c.guild.id)?'⏭️ Şarkı geçildi.':'❌ Şu anda çalan bir şarkı yok.',true));
+simple('play','YouTube/Spotify şarkısı çalar veya kuyruğa ekler.',async c=>{
+  try{
+    if(c.interaction) await c.interaction.deferReply();
+
+    const q=str(c,'query');
+    const t=await playTrack(c.member,q);
+
+    const payload={
+      embeds:[new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({name:'🎵 NEXUS • MÜZİK'})
+        .setTitle('Parça kuyruğa eklendi')
+        .setDescription(`**${t.title}**${t.duration?`\n\n⏱️ ${t.duration} saniye`:''}`)
+        .setThumbnail(t.thumbnail||null)
+        .setFooter({text:'NEXUS Müzik Sistemi'})
+        .setTimestamp()]
+    };
+
+    if(c.interaction?.deferred) return c.interaction.editReply(payload);
+    return reply(c,payload);
+  }catch(e:any){
+    if(c.interaction?.deferred) return c.interaction.editReply(`❌ ${e.message}`);
+    return reply(c,`❌ ${e.message}`,true);
+  }
+},()=>base('play','YouTube/Spotify şarkısı çalar.')
+.addStringOption(o=>o.setName('query').setDescription('Şarkı adı veya YouTube/Spotify URL').setRequired(true)),['çal']);simple('skip','Şarkıyı geçer.',async c=>reply(c,skip(c.guild.id)?'⏭️ Şarkı geçildi.':'❌ Şu anda çalan bir şarkı yok.',true));
 simple('stop','Müziği durdurur ve kuyruğu temizler.',async c=>{stop(c.guild.id);return reply(c,'⏹️ Müzik durduruldu ve kuyruk temizlendi.')});
 simple('pause','Müziği duraklatır.',async c=>reply(c,pause(c.guild.id)?'⏸️ Duraklatıldı.':'❌ Çalan bir müzik yok.',true));
 simple('resume','Müziği devam ettirir.',async c=>reply(c,resume(c.guild.id)?'▶️ Devam ediyor.':'❌ Devam ettirilecek bir müzik yok.',true));
