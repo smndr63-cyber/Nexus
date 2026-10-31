@@ -1,47 +1,25 @@
-# NEXUS Bot — Kurulum ve Discord Yetkileri
+# NEXUS Bot — Kurulum ve veri güvenliği
 
-## 1) Gereksinimler
+## Gereksinimler
 - Node.js 22+
-- Discord Developer Portal'da Bot oluşturulmuş uygulama
-- Message Content Intent
-- Server Members Intent
-- Presence Intent gerekmez; açılması şart değil.
+- Discord Developer Portal'da oluşturulmuş uygulama/bot
+- Message Content Intent ve Server Members Intent
 
-## 2) Token
-`.env.example` → `.env` yap.
-- DISCORD_TOKEN: bot tokenı
-- CLIENT_ID: application ID
-- GUILD_ID: test sunucusu ID'si (önerilir; slash komutları anında gelir)
-- PREFIX: ör. `!`
-- AI_API_KEY: AI özelliği için
-- AI_MODEL: kullanılacak model
+## Yerel kurulum
+1. `.env.example` dosyasını `.env` olarak kopyalayın.
+2. `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID`, `PREFIX` alanlarını doldurun. Token'ı kimseyle paylaşmayın.
+3. Çalıştırın:
+   ```bash
+   npm ci
+   npm run build
+   npm start
+   ```
 
-## 3) Discord izinleri
-Botun rolünü mümkün olduğunca işleyeceği rollerin üstüne koy. Önerilen izinler:
-View Channels, Send Messages, Read Message History, Embed Links, Attach Files, Add Reactions, Manage Messages, Manage Channels, Manage Roles, Kick Members, Ban Members, Moderate Members, Move Members, Connect, Speak, Use Voice Activity, Manage Webhooks.
+## RPG komutları
+`/meslek`, `/work`, `/envanter`, `/market`, `/pazar`, `/uretim`, `/silahlar`, `/kusan`, `/gelistir`, `/parcala`, `/savas`, `/boss`.
 
-## 4) Çalıştırma
-```bash
-npm install
-npm run build
-npm start
-```
+## Veritabanı
+Yerel kurulumda veriler `DATA_DIR` değişkeniyle belirlenen dizindeki `database.json` dosyasında tutulur (varsayılan `./data/database.json`). RPG geçişi eski kullanıcı verilerini silmeden yalnızca eksik alanları ekler. JSON dosyası okunamazsa bot boş veritabanıyla devam etmek yerine başlatmayı durdurur.
 
-İlk testte `GUILD_ID` kullanılması tavsiye edilir.
-
-## 5) Prefix + slash
-Her komut slash olarak kayıt edilir. Aynı komutların çoğu prefix ile de çalışır:
-`!ping`, `!profil`, `!ban @üye`, `!play lo-fi`, vb.
-
-## 6) Veri
-Botun kalıcı verisi `data/database.json` içinde tutulur. Harici SQL sunucusu gerekmez.
-
-## 7) AI
-AI anahtarı verilmezse botun diğer özellikleri çalışır; yalnızca AI komutu devre dışı kalır.
-
-## 8) Müzik
-Müzik için `@discordjs/voice` ve `play-dl` kurulur. FFmpeg'in sistem PATH'inde bulunması tavsiye edilir.
-
-## 1.0.6 notu
-AI şimdilik kapalıdır; `.env` içinde `AI_ENABLED=false` bırakın. Test sunucusunda `/ticket` komutunu Administrator yetkisiyle çalıştırarak ticket panelini kurabilirsiniz.
-
+## Northflank canlı güncellemesi
+Bu paket `data/database.json` içermez. Docker ortamı `/app/data` konumunda kalıcı volume ve mevcut canlı `database.json` dosyası bekler. `REQUIRE_EXISTING_DATABASE=true` koruması nedeniyle dosya yoksa veya boşsa bot başlamaz. Canlı veritabanını yedekleyip volume'a taşımadan dağıtmayın; ayrıntılar `UPGRADE-SAFETY.md` dosyasında.
