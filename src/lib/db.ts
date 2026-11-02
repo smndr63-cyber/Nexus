@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export type GuildConfig = {
   prefix:string; commandRoles:Record<string,string[]>; commandUsers:Record<string,string[]>; logChannels:Record<string,string>; ignoredChannels:string[]; ignoredRoles:string[];
-  levelIgnoredChannels:string[]; levelIgnoredRoles:string[]; welcome?:{channel:string; message:string; dm?:string};
+  levelIgnoredChannels:string[]; levelIgnoredRoles:string[]; levelChannel?:string; welcome?:{channel:string; message:string; dm?:string};
   leave?:{channel:string; message:string}; autorole?:{member?:string; bot?:string}; aiChannel?:string; customCommands:Record<string,string>;
   botName?:string; tempVoice?:{lobby:string; category?:string}; ticket?:{category?:string; supportRole?:string; complaintRole?:string; supportCategory?:string; complaintCategory?:string; panelChannel?:string}; features?:{ai:boolean;music:boolean};
   economyName:string; currency:string; xpMin:number; xpMax:number; cooldown:number;
@@ -15,7 +15,7 @@ export type GuildData={config:GuildConfig; users:Record<string,UserData>; cases:
 const dir=path.resolve(process.env.DATA_DIR||'./data');
 if(!fs.existsSync(dir))fs.mkdirSync(dir,{recursive:true});
 const file=path.join(dir,'database.json');
-const defaults=():GuildData=>({config:{prefix:process.env.PREFIX||'!',commandRoles:{},commandUsers:{},logChannels:{},ignoredChannels:[],ignoredRoles:[],levelIgnoredChannels:[],levelIgnoredRoles:[],customCommands:{},features:{ai:false,music:true},economyName:'Nexus Ekonomisi',currency:'◈',xpMin:8,xpMax:18,cooldown:60000},users:{},cases:[],reactionRoles:[],giveaways:[],reminders:[],customCommands:{},stats:{},rpg:{marketListings:[]}});
+const defaults=():GuildData=>({config:{prefix:process.env.PREFIX||'!',commandRoles:{},commandUsers:{},logChannels:{},ignoredChannels:[],ignoredRoles:[],levelIgnoredChannels:[],levelIgnoredRoles:[],customCommands:{},features:{ai:false,music:true},economyName:'Nexus Ekonomisi',currency:'◈',xpMin:2,xpMax:4,cooldown:45000},users:{},cases:[],reactionRoles:[],giveaways:[],reminders:[],customCommands:{},stats:{},rpg:{marketListings:[]}});
 let db:Record<string,GuildData>={};
 if(!fs.existsSync(file) && process.env.REQUIRE_EXISTING_DATABASE==='true'){throw new Error(`KORUMA: ${file} bulunamadı. Boş veritabanıyla devam edilmiyor; canlı veritabanı kalıcı depolamaya bağlanmalı.`);}
 if(fs.existsSync(file)){
