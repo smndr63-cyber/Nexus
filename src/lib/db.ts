@@ -10,7 +10,7 @@ export type GuildConfig = {
 };
 export type RPGWeapon={id:string;name:string;kind:string;rarity:string;level:number;attack:number;special?:string};
 export type RPGState={profession?:string;professionLevel:number;professionXp:number;lastWork:number;items:Record<string,number>;weapons:RPGWeapon[];armor?:any[];equippedWeapon?:string;equipment:Record<string,string>;lastBattle:number;wins:number;losses:number};
-export type UserData={xp:number; level:number; messages:number; voiceSeconds:number; coins:number; bank:number; warnings:number; lastXp:number; lastDaily:number; lastWeekly:number; lastWork:number; afk?:string; inventory:string[]; rpg?:RPGState; [key:string]:any};
+export type UserData={xp:number; level:number; messages:number; voiceSeconds:number; coins:number; bank:number; warnings:number; lastXp:number; lastDaily:number; lastWeekly:number; lastWork:number; afk?:string; activeBet?:{game:string;amount:number;created:number}; inventory:string[]; rpg?:RPGState; [key:string]:any};
 export type GuildData={config:GuildConfig; users:Record<string,UserData>; cases:any[]; reactionRoles:any[]; giveaways:any[]; reminders:any[]; customCommands:Record<string,string>; starboard?:{channel:string;threshold:number}; stats:Record<string,{messages:number;voiceSeconds:number}>; rpg?:{boss?:any;marketListings?:any[]}; [key:string]:any};
 const dir=path.resolve(process.env.DATA_DIR||'./data');
 if(!fs.existsSync(dir))fs.mkdirSync(dir,{recursive:true});
@@ -50,6 +50,41 @@ function migrateGuild(g:GuildData){
 }
 for(const g of Object.values(db))migrateGuild(g);
 if(Object.keys(db).length>0)save();
+export function refundInterruptedBets(){
+  const pending:{u:UserData;coins:number;bet:NonNullable<UserData['activeBet']>}[]=[];
+  for(const g of Object.values(db)){
+    for(const u of Object.values(g.users)){
+      const bet=u.activeBet;
+      if(!bet)continue;
+      if(!Number.isSafeInteger(bet.amount)||bet.amount<=0){
+        console.error('KRİTİK: Geçersiz yarım bahis kaydı; Nexus güvenlik nedeniyle açılmayacak.');
+        throw new Error('Geçersiz yarım bahis kaydı bulundu.');
+      }
+      if(!Number.isSafeInteger(u.coins)||u.coins<0||!Number.isSafeInteger(u.coins+bet.amount)){
+        console.error('KRİTİK: Kesilen bahis güvenli biçimde iade edilemedi; Nexus güvenlik nedeniyle açılmayacak.');
+        throw new Error('Yarım bahis güvenli biçimde iade edilemedi.');
+      }
+      pending.push({u,coins:u.coins,bet});
+    }
+  }
+  if(!pending.length)return 0;
+  if(timer){clearTimeout(timer);timer=undefined;}
+  for(const item of pending){
+    item.u.coins+=item.bet.amount;
+    delete item.u.activeBet;
+  }
+  try{
+    atomicWrite();
+  }catch(error){
+    for(const item of pending){
+      item.u.coins=item.coins;
+      item.u.activeBet=item.bet;
+    }
+    timer=setTimeout(()=>{try{atomicWrite();}catch(e){console.error('Veritabanı kaydedilemedi; mevcut dosya korunuyor.',e);}},150);
+    throw error;
+  }
+  return pending.length;
+}
 export function guild(id:string){if(!db[id]){db[id]=defaults();save();}else migrateGuild(db[id]);return db[id];}
 export function user(gid:string,uid:string){const g=guild(gid);if(!g.users[uid]){g.users[uid]={xp:0,level:0,messages:0,voiceSeconds:0,coins:100,bank:0,warnings:0,lastXp:0,lastDaily:0,lastWeekly:0,lastWork:0,inventory:[],rpg:{professionLevel:1,professionXp:0,lastWork:0,items:{},weapons:[],armor:[],equipment:{},lastBattle:0,wins:0,losses:0}};save();}else{const u=g.users[uid];u.rpg??={professionLevel:1,professionXp:0,lastWork:0,items:{},weapons:[],armor:[],equipment:{},lastBattle:0,wins:0,losses:0};u.rpg.items??={};u.rpg.weapons??=[];u.rpg.armor??=[];u.rpg.equipment??={};}return g.users[uid];}
 export function mutate(fn:()=>void){fn();save();}
