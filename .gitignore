@@ -5,3 +5,13 @@ dist/
 !.env.example
 data/database.json
 data/database.json.tmp
+
+# Local backups and development notes
+*.backup
+*.bak
+*.tmp
+index-original.txt
+rpg-*.txt
+
+*-backup
+*.pre-*

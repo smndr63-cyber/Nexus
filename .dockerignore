@@ -7,3 +7,13 @@ npm-debug.log
 data/database.json
 data/database.json.tmp
 *.zip
+
+# Git metadata and local development backups
+.git
+*.backup
+*.bak
+*.tmp
+*-backup
+*.pre-*
+index-original.txt
+rpg-*.txt

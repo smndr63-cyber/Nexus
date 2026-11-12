@@ -1,40 +1,39 @@
-# NEXUS 1.0.27
+# NEXUS 1.1.0
 
-Türkçe, embed ağırlıklı Discord sunucu yönetim botu ve başlangıç RPG sistemi.
+Türkçe Discord sunucu yönetim botu ve modüler RPG oyun sistemi.
 
-## Özellikler
-- Moderasyon: warn/unwarn, warnings, timeout/untimeout, kick, ban/unban, purge/sil, lock/unlock, slowmode
-- Özel NEXUS yetkileri, ticket, loglar, geçici ses odaları, welcome/leave, reaction roles ve çekilişler
-- Seviye/istatistik: profil, seviye-top, mesaj-top, ses-top ve sıralamalar
-- Ekonomi: bakiye, günlük/haftalık ödül, banka, transfer ve ekonomi oyunları
-- RPG meslekleri: Ormancı, Madenci, Avcı, Simyacı, Zanaatkâr; mesleğe göre kazanç, bekleme ve malzeme
-- RPG ekipmanı: kılıç, yay, balta, hançer, asa, mızrak; zırh, kalkan, başlık ve çizme
-- NPC marketi, oyuncu malzeme pazarı, üretim, silah kuşanma, +15'e kadar geliştirme ve parçalama
-- PvE savaşları ve ortak sunucu bossu
-- Müzik: YouTube/Spotify arama ve bağlantı, yt-dlp + FFmpeg, kuyruk ve oynatma kontrolleri
-- Prefix (`!`) ve slash komutları
+## Genel özellikler
+- Moderasyon, özel NEXUS yetkileri, ticket, loglar, geçici ses odaları, welcome/leave ve çekilişler
+- Discord XP/seviye sistemi ve sıralamalar
+- Nexus ekonomisi, banka, transfer, günlük giriş serisi ve güvenli bahis oyunları
+- Müzik oynatma, kuyruk ve kontrol komutları
+- Prefix (`!`) ve slash komutları; Discord'un 100 slash komut sınırına uygun kayıt
+
+## RPG özellikleri
+- 11 meslek, 33 uzmanlaşma dalı, 66 üretim tarifi ve artan uzmanlaşma değiştirme tarifesi
+- 100 karakter seviyesi; sonrasında sınırsız ustalık, ilk 100 ustalık seviyesinde puanlar ve sonrasında kozmetik/unvan koleksiyonu
+- 207 eşya, envanter, ekipman, kalite ve üretim
+- 9 bölge ve 9 yerleşim, sekiz tehdit seviyesi, bağlı harita rotaları, keşif, seyahat ve bölgesel kaynaklar
+- 26 yaratık, iz sürme/araştırma, yetenek tabanlı sıra tabanlı PvE, yaralanma ve tedavi
+- 11 meslek bossu ve en fazla dört kişilik gruplarla beş dünya bossu
+- 8 pet türü, besleme, aktif yoldaş ve keşif seferleri
+- 12 görev, 8 bölümlük dallanan ana hikâye, 21 NPC, şehir/bölge kültürü, sekiz kadim güç, sekiz inanç geleneği ve yedi kadim kültür
+- Dört oyuncuya kadar geçici gruplar, iki dakikalık davet, NPC tüccarları ve oyuncu pazarı
 
 ## Kurulum
 1. `.env.example` dosyasını `.env` olarak kopyalayın.
-2. `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID` değerlerini ayarlayın.
+2. `DISCORD_TOKEN`, `CLIENT_ID` ve isteğe bağlı `GUILD_ID` değerlerini ayarlayın.
 3. `npm ci`
-4. `npm run build`
+4. `npm test`
 5. `npm start`
 
-## RPG komutları
-- `/meslek` — meslekleri görüntüle veya bir meslek seç.
-- `/work` — mesleğe göre para ve malzeme kazan.
-- `/envanter`, `/silahlar` — kaynak ve ekipmanlarını görüntüle.
-- `/market` — NPC marketi; ürünleri satın al veya malzeme/silah sat.
-- `/pazar` — oyuncu malzeme ilanları oluştur, satın al veya iptal et.
-- `/uretim` — tariflerle silah veya zırh üret.
-- `/kusan` — silah/zırh kuşan.
-- `/gelistir` — silahı +15'e kadar yükselt; nadirlik yükseltmeyi engellemez.
-- `/parcala` — silahı geliştirme malzemelerine ayır.
-- `/savas` — PvE karşılaşması.
-- `/boss` — ortak sunucu bossu başlat, durumunu gör veya saldır.
+## Belgeler
+- `COMMANDS.md` — komutların ve RPG kullanımının tam listesi
+- `RPG-REHBER.md` — RPG sistemleri ve ilerleme rehberi
+- `UPGRADE-SAFETY.md` — canlı veritabanı ve dağıtım güvenliği
 
-## Canlı veri güvenliği — okumadan dağıtmayın
-Bu ZIP, canlı `data/database.json` dosyasını özellikle içermez. Northflank için Docker imajı `DATA_DIR=/app/data` ve `REQUIRE_EXISTING_DATABASE=true` kullanır. Mevcut canlı veritabanı kalıcı bir volume üzerinde `/app/data/database.json` konumunda bulunmazsa bot **boş veritabanıyla başlamayı reddeder**. Bu, oyuncu istatistiklerinin sessizce sıfırlanmasını önlemek için bilinçli bir korumadır.
+## Canlı veri güvenliği
+Bu ZIP canlı `data/database.json` dosyasını içermez. Docker yapılandırması `DATA_DIR=/app/data` ve `REQUIRE_EXISTING_DATABASE=true` kullanır. Canlı veritabanı kalıcı volume üzerinde `/app/data/database.json` konumunda değilse bot boş veritabanıyla başlamayı reddeder. Bu korumayı kaldırmayın. Canlı dağıtımdan önce veritabanı yedeği alın ve `UPGRADE-SAFETY.md` adımlarını uygulayın.
 
-Canlı güncellemeden önce `UPGRADE-SAFETY.md` adımlarını izleyin. Eski servisin veritabanı yedeğini almadan ve kalıcı depolamaya taşımadan yeni sürümü dağıtmayın.
+## Testler
+`npm test` önce TypeScript derlemesini yapar, ardından RPG servis ve katalog bütünlüğü testlerini çalıştırır.

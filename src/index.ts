@@ -9,6 +9,33 @@ import {
  ActivityType, User, Role, Guild, WebhookClient
 } from 'discord.js';
 import {guild,user,mutate,persist,refundInterruptedBets} from './lib/db';
+import { RPG_PROFESSIONS } from './rpg/data/professions';
+import { getSpecializationChangeFee } from './rpg/specialization-fees';
+import { changeMainSpecialization } from './rpg/specialization-service';
+import { ensureRpgProfile, addCharacterXp, addProfessionXp, xpForMasteryLevel } from './rpg/profile-service';
+import { addItem, countItem, removeItem, equipItem, unequipItem } from './rpg/inventory-service';
+import { getWorldMap, travelToRegion } from './rpg/world-service';
+import { availableQuests, startQuest, advanceQuest, syncQuestMilestones } from './rpg/quest-service';
+import { getNpc, getNpcsInRegion } from './rpg/npc-service';
+import { getAvailableStory, chooseStory } from './rpg/story-service';
+import { startCombat, combatTurn } from './rpg/combat-service';
+import { getRegion } from './rpg/data/world';
+import { getRpgItem } from './rpg/data/items';
+import { RPG_ANCIENT_POWERS, RPG_ANCIENT_CULTURES, RPG_FAITH_TRADITIONS } from './rpg/data/lore';
+import { createGroup, inviteToGroup, acceptGroupInvite, leaveGroup } from './rpg/group-service';
+import { createListing, buyListing, cancelListing } from './rpg/market-service';
+import { craftItem } from './rpg/crafting-service';
+import { createWorldBossState, startWorldBoss, attackWorldBoss } from './rpg/world-boss-service';
+import { startProfessionBoss, professionBossTurn } from './rpg/profession-boss-service';
+import { allocateStatPoints } from './rpg/character-service';
+import { claimDailyStreak } from './lib/daily-streak';
+import { createNpcShopState, buyFromNpc, sellToNpc } from './rpg/npc-market-service';
+import { trackCreature, researchCreature, getCreatureResearch } from './rpg/creature-research-service';
+import { getProfessionBossTier, getProfessionBoss } from './rpg/data/bosses';
+import { getActiveInjuries, treatInjury } from './rpg/injury-service';
+import { RPG_WORLD_BOSSES } from './rpg/data/bosses';
+import { RPG_RECIPES } from './rpg/data/recipes';
+import { adoptPet, setActivePet, startPetExpedition, claimPetExpedition, feedPet, listPetSpecies } from './rpg/pet-service';
 import {ignored,isStaff,formatDuration,parseDuration,clean} from './lib/utils';
 import {askAI} from './lib/ai';
 import {playTrack,queue as musicQueue,current as musicCurrent,skip,stop,pause,resume,setVolume as musicVolume,setLoop as musicLoop,shuffle as musicShuffle,remove as musicRemove,initMusic} from './lib/music';
@@ -23,6 +50,7 @@ const tempRoomControls=new Map<string,string>();
 const permissionSessions=new Map<string,{guildId:string;targetType:'user'|'role';targetId:string;targetIds:string[];category?:string;action?:'add'|'remove'|'view'}>();
 const ticketClaims=new Map<string,string>();
 const levelResetSessions=new Map<string,{guildId:string;adminId:string}>();
+const specializationSessions=new Map<string,any>();
 const commands=new Collection<string,Cmd>();
 const ownerIds=new Set((process.env.OWNER_IDS||'').split(',').map(x=>x.trim()).filter(Boolean));
 const voiceStarts=new Map<string,number>();
@@ -69,7 +97,316 @@ function commandPermissionBuilder(name:string,description:string,perm?:bigint){l
 function visibleCommand(m:GuildMember,cmd:Cmd){return canUseCommand(m,cmd);}
 function simple(name:string,description:string,fn:(c:Ctx)=>Promise<any>,builder?:()=>any,aliases?:string[]){add({name,description,execute:fn,builder:builder||(()=>base(name,description)),aliases});}
 
+// RPG CORE
+simple('rpg-profil','RPG karakterinin genel durumunu gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id); const profile=ensureRpgProfile(wallet.rpg); wallet.rpg=profile; persist();
+ const level=profile.characterLevel||1; const xp=profile.characterXp||0;
+ const professionLines=Object.entries(profile.professions||{}).map(([id,p])=>{const def=RPG_PROFESSIONS.find(x=>x.id===id);return `• **${def?.name||id}:** ${p.level}. seviye (${p.xp} XP)`;});
+ const mainSpec=profile.mainSpecialization?RPG_PROFESSIONS.find(p=>p.id===profile.mainSpecialization!.professionId)?.specializations.find(s=>s.id===profile.mainSpecialization!.specializationId)?.name:'Seçilmedi';
+ const pet=profile.pets?.find(x=>x.id===profile.activePetId);
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 NEXUS | Maceracı Profili').setDescription(`**${c.member.displayName}**\nKarakter seviyesi: **${level}** • XP: **${xp}**\nBölge: **${profile.currentRegionId||'Bilinmiyor'}**\nGüç ${profile.stats?.strength||5} • Dayanıklılık ${profile.stats?.vitality||5} • Çeviklik ${profile.stats?.agility||5} • Zekâ ${profile.stats?.intelligence||5} • Dağıtılabilir puan ${profile.stats?.points||0}\nCüzdan: **${wallet.coins.toLocaleString('tr-TR')} ◈** • Banka: **${wallet.bank.toLocaleString('tr-TR')} ◈**\nPet: **${pet?.name||'Yok'}**\nAna uzmanlık: **${mainSpec}**\nUstalık: **${profile.masteryLevel||0}** • Ustalık XP: **${profile.masteryXp||0}** • Ustalık puanı: **${profile.masteryPoints||0}**`).addFields({name:'Meslek Gelişimi',value:professionLines.join('\n')||'Meslek verisi yok.'}).setTimestamp()]});
+});
+simple('envanter','RPG envanterini gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ const lines=(profile.itemInstances||[]).slice(0,35).map(item=>{const def=getRpgItem(item.definitionId);return `• **${def?.name||item.definitionId}** ×${item.quantity} • Kimlik: \`${item.id}\``;});
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x3498db).setTitle('🎒 NEXUS | Envanter').setDescription(lines.join('\n')||'Envanterin boş.').setFooter({text:`Toplam ${profile.itemInstances?.length||0} eşya yığını`})]});
+});
+simple('kusak','Envanterindeki bir ekipman örneğini kuşanır.',async c=>{
+ const instanceId=str(c,'esya');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=equipItem(profile,instanceId);
+ if(!result.ok)return reply(c,({item_not_found:'Bu eşya bulunamadı.',not_equippable:'Bu eşya kuşanabilir değil.',level_too_low:'Karakter seviyen yetersiz.',profession_required:'Gerekli meslek seviyesi yetersiz.',specialization_required:'Gerekli uzmanlaşmaya sahip değilsin.',active_pet_required:'Pet ekipmanı kuşanmak için aktif bir pet seçmelisin.'} as any)[result.reason]||'Eşya kuşanılamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,'🛡️ Ekipman kuşanıldı.');
+},()=>base('kusak','Envanterindeki bir ekipman örneğini kuşanır.').addStringOption(o=>o.setName('esya').setDescription('Envanterde görünen eşya kimliği').setRequired(true)));
+simple('ekipman-cikar','Seçili ekipman yuvasını boşaltır.',async c=>{
+ const slot=str(c,'yuva');const type=str(c,'tur')==='pet';const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=unequipItem(profile,slot as any,type);
+ if(!result.ok)return reply(c,'Bu ekipman yuvası zaten boş veya geçersiz.',true);
+ wallet.rpg=profile;persist();return reply(c,`Ekipman yuvası **${slot}** boşaltıldı.`);
+},()=>base('ekipman-cikar','Seçili ekipman yuvasını boşaltır.').addStringOption(o=>o.setName('yuva').setDescription('Boşaltılacak ekipman yuvası').setRequired(true).addChoices({name:'Silah',value:'weapon'},{name:'Miğfer',value:'helmet'},{name:'Göğüs',value:'chest'},{name:'Pantolon',value:'pants'},{name:'Eldiven',value:'gloves'},{name:'Çizme',value:'boots'},{name:'Pelerin',value:'cloak'},{name:'Kalkan',value:'shield'},{name:'Kolye',value:'necklace'},{name:'Yüzük',value:'ring'},{name:'Kemer',value:'belt'},{name:'Tılsım',value:'charm'},{name:'Pet Tasması',value:'pet_collar'},{name:'Pet Zırhı',value:'pet_armor'},{name:'Pet Tılsımı',value:'pet_talisman'})).addStringOption(o=>o.setName('tur').setDescription('Oyuncu veya aktif pet ekipmanı').addChoices({name:'Oyuncu',value:'player'},{name:'Pet',value:'pet'})));
+simple('harita','Bölgeleri, kilitleri ve mevcut konumunu gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ const lines=getWorldMap(profile).map(r=>`${r.current?'📍':r.discovered?'🗺️':r.unlocked?'🔓':'🔒'} **${r.name}** — ${r.settlement?.name||'Yerleşim yok'} • Tehdit ${r.dangerLevel}/8 • Önerilen seviye ${r.recommendedLevel}${r.unlocked?'':' • Kilitli'}\nBağlantılar: ${r.connectedRegions.map(id=>getRegion(id)?.name||id).join(', ')}${r.connected?' • Buradan gidilebilir':''}`).join('\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x2ecc71).setTitle('🗺️ NEXUS | Dünya Haritası').setDescription(lines).setFooter({text:'Yeni bölgeler karakter gelişimi ve hikâye ilerlemesiyle açılır.'})]});
+});
+simple('seyahat','Açılmış bir bölgeye seyahat eder.',async c=>{
+ const regionId=str(c,'bolge');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=travelToRegion(profile,regionId);
+ if(!result.ok)return reply(c,({unknown_region:'Bölge bulunamadı.',region_locked:'Bu bölge henüz açılmadı.',not_connected:'Bu bölgeye doğrudan geçiş yok; haritadaki bağlantılı bölge üzerinden ilerlemelisin.',travel_cooldown:'Bu yolculuk için bekleme süren henüz dolmadı.'} as any)[result.reason]||'Seyahat başarısız.',true);
+ for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'discover',regionId,1);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;}wallet.rpg=profile;persist();return reply(c,`🧭 **${regionId}** bölgesine ulaştın.`);
+},()=>base('seyahat','Açılmış bir bölgeye seyahat eder.').addStringOption(o=>o.setName('bolge').setDescription('Bölge kimliği').setRequired(true)));
+simple('kesif','Bulunduğun bölgede kaynak arar.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const region=getRegion(profile.currentRegionId||'baslangic_duzlugu');
+ if(!region)return reply(c,'Geçerli bölge bulunamadı.',true);
+ const candidates=region.resources.filter(id=>!!getRpgItem(id));if(!candidates.length)return reply(c,'Bu bölgede toplanabilir kaynak yok.',true);
+ const itemId=candidates[Math.floor(Math.random()*candidates.length)];const quantity=1+Math.floor(Math.random()*2);const result=addItem(profile,itemId,quantity,`exploration:${region.id}`);
+ if(!result.ok)return reply(c,'Kaynak envantere eklenemedi.',true);
+ const profession=RPG_PROFESSIONS.find(p=>p.primaryResources.includes(itemId));let professionText='';
+ if(profession){const gained=addProfessionXp(profile,profession.id,8+quantity*2);professionText=`\n**${profession.name}:** +${gained?.gained||0} meslek XP`;const p=profile.professions?.[profession.id];if(p){p.statistics=p.statistics||{};p.statistics.itemsGathered=(p.statistics.itemsGathered||0)+quantity;}}
+ for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qResult=advanceQuest(profile,questId,'collect',itemId,quantity);if(qResult.ok&&qResult.completed&&qResult.rewards)wallet.coins+=qResult.rewards.coins;}
+ wallet.rpg=profile;persist();return reply(c,`🔎 Keşif başarılı! **${getRpgItem(itemId)?.name||itemId} ×${quantity}** buldun.${professionText}`);
+});
+simple('gorevler','Alınabilir ve devam eden görevlerini gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ const available=availableQuests(profile).slice(0,10).map(q=>`🟢 **${q.id} — ${q.name}**\n${q.description}`).join('\n');
+ const active=Object.values(profile.quests||{}).filter(q=>q.status==='active').map(q=>`🟡 **${q.questId}** — ${Object.values(q.progress).reduce((a,b)=>a+b,0)} hedef ilerlemesi`).join('\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0xf1c40f).setTitle('📜 NEXUS | Görev Defteri').addFields({name:'Alınabilir Görevler',value:(available||'Yeni görev bulunmuyor.').slice(0,1024)},{name:'Devam Eden Görevler',value:(active||'Aktif görevin yok.').slice(0,1024)})]});
+});
+simple('gorev-al','Uygun bir görevi başlatır.',async c=>{
+ const questId=str(c,'gorev');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=startQuest(profile,questId);
+ if(!result.ok)return reply(c,({unknown_quest:'Görev bulunamadı.',quest_locked_or_completed:'Görev henüz uygun değil veya tamamlandı.',already_active:'Bu görev zaten aktif.',cooldown:'Tekrar görevi için bekleme süren dolmadı.'} as any)[result.reason]||'Görev başlatılamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,`📜 **${questId}** görevi günlüğüne eklendi.`);
+},()=>base('gorev-al','Uygun bir görevi başlatır.').addStringOption(o=>o.setName('gorev').setDescription('Görev kimliği').setRequired(true)));
+simple('npc','Bulunduğun bölgedeki NPC karakterlerini gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ const npcs=getNpcsInRegion(profile.currentRegionId||'baslangic_duzlugu');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x9b59b6).setTitle('🧑‍🤝‍🧑 NEXUS | Bölge Sakinleri').setDescription(npcs.map(n=>`**${n.name}** — ${n.role} • ${n.settlementName||'Yerleşim'}\n${n.description}\nHizmetler: ${n.services.join(', ')}`).join('\n\n')||'Bu bölgede tanınan NPC yok.')]});
+});
+simple('hikaye','Açık ana hikâye bölümünü gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();const chapter=getAvailableStory(profile)[0];
+ if(!chapter){if(profile.storyEnding)return reply(c,`📜 Ana hikâye tamamlandı. Sonun: **${profile.storyEnding==='balance'?'Sekiz Gücün Dengesi':'Yeni Kadim Yemin'}**. Seçimin kalıcı olarak kaydedildi.`);return reply(c,'Şu anda yeni bir hikâye bölümü açılmadı.');}
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x8e44ad).setTitle('📖 '+chapter.title).setDescription(chapter.description+'\n\n'+chapter.choices.map(x=>`• **${x.id}** — ${x.label}`).join('\n')).setFooter({text:'Seçim yapmak için /hikaye-sec komutunu kullan.'})]});
+});
+simple('hikaye-sec','Hikâye bölümünde kalıcı bir seçim yapar.',async c=>{
+ const chapterId=str(c,'bolum');const choiceId=str(c,'secim');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=chooseStory(profile,chapterId,choiceId);
+ if(!result.ok)return reply(c,'Bu seçim geçersiz, kilitli veya daha önce yapılmış.',true);
+ wallet.rpg=profile;persist();return reply(c,'📖 Seçimin kaydedildi. Hikâye ilerleyişini etkileyecek.');
+},()=>base('hikaye-sec','Hikâye bölümünde kalıcı bir seçim yapar.').addStringOption(o=>o.setName('bolum').setDescription('Bölüm kimliği').setRequired(true)).addStringOption(o=>o.setName('secim').setDescription('Seçim kimliği').setRequired(true)));
+simple('yaratik-izle','Bulunduğun bölgedeki yaratığın izini sürer veya araştırır.',async c=>{
+ const creatureId=str(c,'yaratik');const action=str(c,'eylem');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const regionId=profile.currentRegionId||'baslangic_duzlugu';
+ const result=action==='iz_sur'?trackCreature(profile,creatureId,regionId):action==='arastir'?researchCreature(profile,creatureId):{ok:true,...getCreatureResearch(profile,creatureId)};
+ if(!result.ok)return reply(c,({creature_not_here:'Bu yaratığın izi bulunduğun bölgede yok.',tracking_cooldown:'Bu yaratığın izini yakın zamanda sürdün; yeniden incelemek için beş dakika bekle.',unknown_creature:'Yaratık bulunamadı.',already_researched:'Bu yaratık hakkında araştırman zaten tamam.',more_observations_required:'Araştırma için en az üç gözlem veya av kaydı gerekli.'} as any)[result.reason]||'Yaratık araştırması başarısız.',true);
+ wallet.rpg=profile;persist();return reply(c,{embeds:[new EmbedBuilder().setColor(0x16a085).setTitle('🔎 Yaratık Araştırması').setDescription(`**${creatureId}**\nGözlem: **${result.observations}/3** • Av: **${result.kills}**\nAraştırma: **${result.researched?'Tamamlandı':'Devam ediyor'}**\n${result.clue||'Henüz ayrıntılı bulgu yok.'}${result.researched?'\n\nSavaşta %10 hasar ve ganimet şansı avantajı kazanırsın.':''}`)]});
+},()=>base('yaratik-izle','Bulunduğun bölgedeki yaratığın izini sürer veya araştırır.').addStringOption(o=>o.setName('yaratik').setDescription('Yaratık kimliği').setRequired(true)).addStringOption(o=>o.setName('eylem').setDescription('İz sür, araştır veya durum').setRequired(true).addChoices({name:'İz sür',value:'iz_sur'},{name:'Araştır',value:'arastir'},{name:'Durum',value:'durum'})));
+simple('avla','Bulunduğun bölgedeki bir yaratıkla savaş başlatır.',async c=>{
+ const creatureId=str(c,'yaratik');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const region=getRegion(profile.currentRegionId||'baslangic_duzlugu');
+ if(!region?.creatures.includes(creatureId))return reply(c,'Bu yaratık bulunduğun bölgede bulunmuyor.',true);
+ const result=startCombat(profile,creatureId,c.member.id);if(!result.ok)return reply(c,({battle_active:'Zaten devam eden bir savaşın var.',unknown_creature:'Yaratık bulunamadı.',creature_too_strong:'Bu yaratık seviyenin çok üzerinde.'} as any)[result.reason]||'Savaş başlatılamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,{embeds:[new EmbedBuilder().setColor(0xe74c3c).setTitle('⚔️ Savaş Başladı: '+result.battle.opponentName).setDescription(`Rakip canı: **${result.battle.opponentHealth}/${result.battle.maxOpponentHealth}**\nSenin canın: **${result.battle.playerHealth}/${result.battle.maxPlayerHealth}**\nHamle için /savas-hamle komutunu kullan.`)]});
+},()=>base('avla','Bulunduğun bölgedeki bir yaratıkla savaş başlatır.').addStringOption(o=>o.setName('yaratik').setDescription('Yaratık kimliği').setRequired(true)));
+simple('savas-hamle','Devam eden savaşta hamle yapar.',async c=>{
+ const action=str(c,'hamle') as 'attack'|'defend'|'flee';if(!['attack','defend','flee'].includes(action))return reply(c,'Hamle geçersiz.',true);
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=combatTurn(profile,c.member.id,action);
+ if(!result.ok)return reply(c,({battle_not_found:'Aktif savaşın bulunmuyor.',battle_expired:'Savaş süresi doldu.',opponent_missing:'Rakip artık mevcut değil.',profession_boss_requires_command:'Meslek bossu için /meslek-boss-hamle komutunu kullan.'} as any)[result.reason]||'Hamle gerçekleştirilemedi.',true);
+ wallet.rpg=profile;if(result.state==='won'&&result.rewards){wallet.coins+=result.rewards.coins;for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'defeat',result.battle.opponentId,1);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)wallet.coins+=qr.rewards.coins;}persist();
+ const status=result.state==='won'?`🏆 Zafer! **${result.rewards?.xp||0} XP** ve **${result.rewards?.coins||0} ◈** kazandın.\n${result.rewards?.drops.map(d=>`${d.itemId} ×${d.quantity}`).join(', ')||'Ek ganimet yok.'}`:result.state==='lost'?'💀 Yenildin.':action==='flee'?'🏃 Savaştan kaçtın.':`Verdiğin hasar: **${result.damage}**\nRakip canı: **${result.battle.opponentHealth}/${result.battle.maxOpponentHealth}**\nSenin canın: **${result.battle.playerHealth}/${result.battle.maxPlayerHealth}**${result.enemyAbility?`\nRakip yeteneği: **${result.enemyAbility}**`:''}${result.battle.statuses.length?`\nDurum etkileri: ${result.battle.statuses.map(x=>x.id).join(', ')}`:''}`;
+ return reply(c,{embeds:[new EmbedBuilder().setColor(result.state==='won'?0x2ecc71:result.state==='lost'?0x7f8c8d:0xe67e22).setTitle('⚔️ '+result.battle.opponentName).setDescription(status)]});
+},()=>base('savas-hamle','Devam eden savaşta hamle yapar.').addStringOption(o=>o.setName('hamle').setDescription('Saldır, savun veya kaç').setRequired(true).addChoices({name:'Saldır',value:'attack'},{name:'Savun',value:'defend'},{name:'Kaç',value:'flee'})));
+
+// MULTIPLAYER & PLAYER MARKET
+simple('grup-kur','Dört kişiye kadar geçici macera grubu kurar.',async c=>{
+ const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.groups=data.rpg.groups||{};
+ const result=createGroup(data.rpg.groups,c.guild.id,c.member.id);if(!result.ok)return reply(c,'Zaten bir macera grubundasın.',true);
+ persist();return reply(c,`🤝 Macera grubun kuruldu. Grup kimliği: \`${result.group.id}\`\nEn fazla 3 oyuncu daha davet edebilirsin.`);
+});
+simple('grup-davet','Macera grubuna bir oyuncu davet eder.',async c=>{
+ const target=userOpt(c,'hedef');if(target.bot||target.id===c.member.id)return reply(c,'Geçerli bir oyuncu seç.',true);
+ const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.groups=data.rpg.groups||{};
+ const group=Object.values(data.rpg.groups).find((g:any)=>g.members?.some((m:any)=>m.userId===c.member.id)) as any;
+ if(!group)return reply(c,'Önce /grup-kur komutuyla grup kurmalısın.',true);
+ if(Object.values(data.rpg.groups).some((g:any)=>g.members?.some((m:any)=>m.userId===target.id)))return reply(c,'Bu oyuncu zaten başka bir macera grubunda.',true);
+ const result=inviteToGroup(group,c.member.id,target.id);if(!result.ok)return reply(c,({leader_only:'Yalnızca grup lideri davet gönderebilir.',group_full:'Grup en fazla dört oyuncu olabilir.',already_member:'Bu oyuncu zaten grupta.',invite_exists:'Bu oyuncunun zaten geçerli daveti var.'} as any)[result.reason]||'Davet gönderilemedi.',true);
+ persist();const dmSent=await target.send(`🤝 **NEXUS Macera Grubu Daveti**\n<@${c.member.id}> seni bir macera grubuna davet etti.\nGrup kimliği: \`${group.id}\`\nDavet iki dakika geçerli. Katılmak için sunucuda \`/grup-kabul grup:${group.id}\` komutunu kullan.`).then(()=>true).catch(()=>false);return reply(c,`📨 ${target} oyuncusu davet edildi. Davet **2 dakika** geçerli. Grup kimliği: \`${group.id}\`${dmSent?'\nDavet özel mesajla da iletildi.':'\nÖzel mesaj gönderilemedi; grup kimliğini oyuncuya ilet.'}`);
+},()=>base('grup-davet','Macera grubuna bir oyuncu davet eder.').addUserOption(o=>o.setName('hedef').setDescription('Davet edilecek oyuncu').setRequired(true)));
+simple('grup-kabul','Bir macera grubu davetini kabul eder.',async c=>{
+ const groupId=str(c,'grup');const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.groups=data.rpg.groups||{};
+ const result=acceptGroupInvite(data.rpg.groups,groupId,c.member.id);if(!result.ok)return reply(c,({group_not_found:'Grup bulunamadı.',already_in_group:'Zaten başka bir gruptasın.',invite_expired:'Geçerli davetin bulunmuyor veya süresi dolmuş.',group_full:'Grup artık dolu.'} as any)[result.reason]||'Gruba katılamadın.',true);
+ persist();return reply(c,`🤝 **${result.group.leaderId}** liderliğindeki gruba katıldın. (${result.group.members.length}/4)`);
+},()=>base('grup-kabul','Bir macera grubu davetini kabul eder.').addStringOption(o=>o.setName('grup').setDescription('Davet mesajındaki grup kimliği').setRequired(true)));
+simple('gruptan-ayril','Mevcut macera grubundan ayrılır.',async c=>{
+ const data=guild(c.guild.id);const groups=data.rpg?.groups||{};const group=Object.values(groups).find((g:any)=>g.members?.some((m:any)=>m.userId===c.member.id)) as any;
+ if(!group)return reply(c,'Herhangi bir grupta değilsin.',true);
+ const result=leaveGroup(groups,group.id,c.member.id);if(!result.ok)return reply(c,'Gruptan ayrılamadın.',true);
+ persist();return reply(c,'Macera grubundan ayrıldın. Lider ayrıldıysa liderlik devredildi.');
+});
+simple('pazar-ilan','Envanterindeki eşyayı oyuncu pazarında satışa çıkarır.',async c=>{
+ const itemId=str(c,'esya');const quantity=num(c,'adet',1);const price=num(c,'fiyat',0);
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);
+ const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.marketListings=data.rpg.marketListings||{};
+ const result=createListing(data.rpg.marketListings,c.member.id,profile,itemId,quantity,price);
+ if(!result.ok)return reply(c,({not_tradeable:'Bu eşya takas edilemez.',invalid_listing:'Adet veya birim fiyat geçersiz.',insufficient_items:'Bu kadar eşyan yok.'} as any)[result.reason]||'İlan oluşturulamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,`🏷️ İlan oluşturuldu. Kimlik: \`${result.listing!.id}\` • ${quantity} adet • Birim fiyat ${price.toLocaleString('tr-TR')} ◈`);
+},()=>base('pazar-ilan','Envanterindeki eşyayı oyuncu pazarında satışa çıkarır.').addStringOption(o=>o.setName('esya').setDescription('Eşya kimliği').setRequired(true)).addIntegerOption(o=>o.setName('adet').setDescription('Satılacak adet').setRequired(true).setMinValue(1).setMaxValue(999)).addIntegerOption(o=>o.setName('fiyat').setDescription('Birim fiyat').setRequired(true).setMinValue(1).setMaxValue(10000000)));
+simple('pazar','Aktif oyuncu pazarı ilanlarını listeler.',async c=>{
+ const listings=Object.values(guild(c.guild.id).rpg?.marketListings||{}) as any[];const now=Date.now();
+ const active=listings.filter(x=>x.expiresAt>now).slice(0,15);
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0xf1c40f).setTitle('🏪 NEXUS | Oyuncu Pazarı').setDescription(active.map(x=>`**${getRpgItem(x.itemId)?.name||x.itemId}** ×${x.quantity}\nBirim: **${x.unitPrice.toLocaleString('tr-TR')} ◈** • Satıcı: <@${x.sellerId}>\nİlan: \`${x.id}\``).join('\n\n')||'Şu anda aktif ilan yok.').setFooter({text:'Satın almak için /pazar-al komutunu kullan.'})]});
+});
+simple('pazar-al','Oyuncu pazarındaki bir ilanı satın alır.',async c=>{
+ const listingId=str(c,'ilan');const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.marketListings=data.rpg.marketListings||{};
+ const listing=data.rpg.marketListings[listingId];if(!listing)return reply(c,'İlan bulunamadı.',true);
+ const buyer=user(c.guild.id,c.member.id);const seller=user(c.guild.id,listing.sellerId);const buyerProfile=ensureRpgProfile(buyer.rpg);
+ const before={buyerCoins:buyer.coins,sellerCoins:seller.coins,buyerRpg:buyer.rpg,listing:{...listing}};
+ const result=buyListing(data.rpg.marketListings,listingId,c.member.id,buyerProfile,buyer.coins);
+ if(!result.ok)return reply(c,({own_listing:'Kendi ilanını satın alamazsın.',listing_expired:'İlanın süresi dolmuş.',insufficient_coins:'Yeterli ◈ bakiyen yok.',listing_not_found:'İlan bulunamadı.'} as any)[result.reason]||'Satın alma başarısız.',true);
+ const tax=Math.floor(result.total!*0.05);buyer.coins-=result.total!;seller.coins+=result.total!-tax;buyer.rpg=buyerProfile;
+ try{persist();}catch(error){buyer.coins=before.buyerCoins;seller.coins=before.sellerCoins;buyer.rpg=before.buyerRpg;data.rpg.marketListings[listingId]=before.listing;throw error;}
+ return reply(c,`✅ Eşyayı **${result.total!.toLocaleString('tr-TR')} ◈** karşılığında aldın. Pazar vergisi: **${tax} ◈**.`);
+},()=>base('pazar-al','Oyuncu pazarındaki bir ilanı satın alır.').addStringOption(o=>o.setName('ilan').setDescription('İlan kimliği').setRequired(true)));
+
+simple('pazar-iptal','Kendi pazar ilanını iptal edip eşyayı geri alır.',async c=>{
+ const listingId=str(c,'ilan');const data=guild(c.guild.id);const listings=data.rpg?.marketListings||{};const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);
+ const result=cancelListing(listings,listingId,c.member.id,profile);if(!result.ok)return reply(c,({listing_not_found:'İlan bulunamadı.',not_owner:'Bu ilan sana ait değil.'} as any)[result.reason]||'İlan iptal edilemedi.',true);
+ wallet.rpg=profile;persist();return reply(c,'↩️ İlan iptal edildi ve eşya envanterine iade edildi.');
+},()=>base('pazar-iptal','Kendi pazar ilanını iptal edip eşyayı geri alır.').addStringOption(o=>o.setName('ilan').setDescription('İlan kimliği').setRequired(true)));
+simple('tarifler','Meslek üretim tariflerini listeler.',async c=>{
+ const professionId=str(c,'meslek');const profession=RPG_PROFESSIONS.find(p=>p.id===professionId);if(!profession)return reply(c,'Meslek bulunamadı. Meslek kimliğini kontrol et.',true);
+ const lines=RPG_RECIPES.filter(r=>r.profession===professionId).map(r=>`• **${r.name}** — \`${r.id}\` • Seviye ${r.requiredLevel}${r.requiredMastery?` • Ustalık ${r.requiredMastery}`:''}${r.specialization?` • Dal ${r.specialization} ${r.requiredSpecializationLevel||1}/3`:''}`);
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x1abc9c).setTitle('📘 '+profession.name+' | Tarifler').setDescription(lines.join('\n')||'Bu meslek için kayıtlı tarif yok.')]});
+},()=>base('tarifler','Meslek üretim tariflerini listeler.').addStringOption(o=>o.setName('meslek').setDescription('Meslek kimliği').setRequired(true)));
+simple('uret','Öğrendiğin tarifle eşya üretir.',async c=>{
+ const recipeId=str(c,'tarif');const quantity=num(c,'adet',1);const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=craftItem(profile,recipeId,quantity);
+ if(!result.ok)return reply(c,({unknown_recipe:'Tarif bulunamadı.',profession_missing:'Meslek verisi bulunamadı.',profession_level_low:'Meslek seviyen yetersiz.',mastery_low:'Ustalık seviyen yetersiz.',wrong_specialization:'Bu tarif için doğru ana uzmanlığa sahip değilsin.',specialization_level_low:'Uzmanlaşma dalı seviyen bu tarif için yetersiz.',recipe_locked:'Bu tarifi henüz öğrenmedin.',invalid_quantity:'Üretim adedi 1-20 arasında olmalı.',invalid_output_item:'Tarifin çıktı eşyası geçersiz.'} as any)[result.reason]||`Üretim başarısız: ${result.reason}`,true);
+ for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'craft',result.outputItemId,quantity);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;if(result.quality>=80){const master=advanceQuest(profile,questId,'craft','masterwork',1);if(master.ok&&master.completed&&master.rewards)wallet.coins+=master.rewards.coins;}}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)wallet.coins+=qr.rewards.coins;wallet.rpg=profile;persist();return reply(c,`🔨 **${getRpgItem(result.outputItemId)?.name||result.outputItemId} ×${result.quantity}** üretildi. Kalite: **${result.quality}/100** • Meslek XP: **+${result.xpGained}**`);
+},()=>base('uret','Öğrendiğin tarifle eşya üretir.').addStringOption(o=>o.setName('tarif').setDescription('Tarif kimliği').setRequired(true)).addIntegerOption(o=>o.setName('adet').setDescription('Üretim adedi').setMinValue(1).setMaxValue(20)));
+// PET COMPANIONS
+simple('petler','Petlerini, durumlarını ve tür kataloğunu gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ const lines=(profile.pets||[]).map(p=>`**${p.name}** (${p.speciesId}) • Seviye ${p.level} • Can ${p.health} • Enerji ${p.energy} • Açlık ${p.hunger} • ${p.status} • \`${p.id}\``);
+ const catalog=listPetSpecies().map(p=>`• **${p.name}** — ${p.rarity}: ${p.description}`).join('\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x27ae60).setTitle('🐾 NEXUS | Yoldaşların').setDescription(lines.join('\n')||'Henüz bir pet edinmedin.').addFields({name:'Tür Kataloğu',value:catalog.slice(0,1024)})]});
+});
+simple('pet-edin','Pet türleri arasından bir yoldaş edinir.',async c=>{
+ const speciesId=str(c,'tur');const name=str(c,'isim');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);
+ const species=listPetSpecies().find(p=>p.id===speciesId);if(!species)return reply(c,'Pet türü bulunamadı.',true);
+ // Rare and higher rarity companions require the matching rare egg; common/quality companions require a pet meat offering.
+ const offering=species.rarity==='legendary'||species.rarity==='mythic'?'efsanevi_yumurta':species.rarity==='epic'?'boss_ozu':'pet_et';const offeringQuantity=species.rarity==='epic'?2:species.rarity==='rare'?5:species.rarity==='quality'?3:1;
+ const consumed=removeItem(profile,offering,offeringQuantity);if(!consumed.ok)return reply(c,`Bu yoldaşı edinmek için **${getRpgItem(offering)?.name||offering} ×${offeringQuantity}** gerekiyor.`,true);
+ const result=adoptPet(profile,speciesId,name||undefined);if(!result.ok){addItem(profile,offering,offeringQuantity,'pet_adoption_refund');return reply(c,'Pet sınırına ulaştın veya tür bulunamadı.',true);}
+ wallet.rpg=profile;persist();return reply(c,`🐾 **${result.pet!.name}** artık yoldaşın! Kullanılan eşya: ${getRpgItem(offering)?.name||offering}.`);
+},()=>base('pet-edin','Pet türleri arasından bir yoldaş edinir.').addStringOption(o=>o.setName('tur').setDescription('Pet tür kimliği').setRequired(true)).addStringOption(o=>o.setName('isim').setDescription('Petin adı').setMaxLength(24)));
+simple('pet-besle','Petine envanterindeki yiyeceklerden verir.',async c=>{
+ const petId=str(c,'pet');const foodId=str(c,'yiyecek');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=feedPet(profile,petId,foodId);
+ if(!result.ok)return reply(c,({pet_not_found:'Pet bulunamadı.',not_hungry:'Petin şu anda aç değil.',food_missing:'Bu yiyecek envanterinde yok.'} as any)[result.reason]||'Pet beslenemedi.',true);
+ wallet.rpg=profile;persist();return reply(c,`🍖 **${result.pet!.name}** beslendi. Açlık: **${result.pet!.hunger}/100** • Bağ: **${result.pet!.bond}/100**`);
+},()=>base('pet-besle','Petine envanterindeki yiyeceklerden verir.').addStringOption(o=>o.setName('pet').setDescription('Pet kimliği').setRequired(true)).addStringOption(o=>o.setName('yiyecek').setDescription('Yiyecek eşya kimliği').setRequired(true)));
+simple('pet-aktif','Bir peti aktif yoldaşın yapar.',async c=>{
+ const petId=str(c,'pet');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=setActivePet(profile,petId);
+ if(!result.ok)return reply(c,'Pet bulunamadı veya şu anda kullanılamıyor.',true);
+ wallet.rpg=profile;persist();return reply(c,`🐾 **${result.pet!.name}** artık aktif yoldaşın.`);
+},()=>base('pet-aktif','Bir peti aktif yoldaşın yapar.').addStringOption(o=>o.setName('pet').setDescription('Pet kimliği').setRequired(true)));
+simple('pet-sefer','Petini keşif seferine gönderir.',async c=>{
+ const petId=str(c,'pet');const regionId=str(c,'bolge');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=startPetExpedition(profile,petId,regionId);
+ if(!result.ok)return reply(c,({pet_or_region_missing:'Pet veya bölge bulunamadı.',pet_unavailable:'Petin yeterli enerjiye sahip değil ya da şu anda kullanılamıyor.',region_not_discovered:'Önce bu bölgeyi keşfetmelisin.',expedition_active:'Bu pet zaten seferde.'} as any)[result.reason]||'Sefer başlatılamadı.',true);
+ const expedition=profile.petExpeditions!.find(x=>x.petId===petId&&x.status==='active')!;wallet.rpg=profile;persist();return reply(c,`🧭 **${result.pet!.name}** keşfe çıktı. Sefer kimliği: \`${expedition.id}\` • Bitiş: <t:${Math.floor(expedition.completesAt/1000)}:R>`);
+},()=>base('pet-sefer','Petini keşif seferine gönderir.').addStringOption(o=>o.setName('pet').setDescription('Pet kimliği').setRequired(true)).addStringOption(o=>o.setName('bolge').setDescription('Keşfedilmiş bölge kimliği').setRequired(true)));
+simple('pet-sefer-al','Tamamlanan pet keşif seferinin ganimetini alır.',async c=>{
+ const expeditionId=str(c,'sefer');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=claimPetExpedition(profile,expeditionId);
+ if(!result.ok)return reply(c,({expedition_missing:'Sefer bulunamadı.',already_claimed:'Bu sefer zaten tamamlanmış.',not_ready:'Sefer henüz bitmedi.',pet_or_region_missing:'Pet veya bölge verisi bulunamadı.'} as any)[result.reason]||'Ganimet alınamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,`🎒 **${result.pet!.name}** seferden döndü. Ganimet: ${result.rewards?.map(x=>`${x.itemId} ×${x.quantity}`).join(', ')||'Bu kez eşya bulamadı.'}`);
+},()=>base('pet-sefer-al','Tamamlanan pet keşif seferinin ganimetini alır.').addStringOption(o=>o.setName('sefer').setDescription('Sefer kimliği').setRequired(true)));
+
+simple('meslek-boss','Mesleğine ait kademeli boss ile karşılaşır.',async c=>{
+ const professionId=str(c,'meslek');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=startProfessionBoss(profile,professionId,c.member.id);
+ if(!result.ok)return reply(c,({already_in_combat:'Başka bir savaşın devam ediyor.',unknown_profession:'Meslek veya meslek bossu bulunamadı.',tier_locked:'Bu boss kademesi için meslek seviyesi ya da ustalığın yetersiz.',cooldown:'Bu meslek bossuna yeniden meydan okumak için beklemelisin.'} as any)[result.reason]||'Meslek bossu başlatılamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,`⚔️ **${result.battle.opponentName}** karşında! Canı: **${result.battle.opponentHealth}**. Hamle için /meslek-boss-hamle komutunu kullan.`);
+},()=>base('meslek-boss','Mesleğine ait kademeli boss ile karşılaşır.').addStringOption(o=>o.setName('meslek').setDescription('Meslek kimliği').setRequired(true)));
+simple('meslek-boss-hamle','Meslek bossu savaşında hamle yapar.',async c=>{
+ const action=str(c,'hamle') as 'attack'|'defend'|'flee';if(!['attack','defend','flee'].includes(action))return reply(c,'Hamle geçersiz.',true);
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=professionBossTurn(profile,c.member.id,action);
+ if(!result.ok)return reply(c,({boss_battle_not_found:'Aktif meslek bossu savaşın bulunmuyor.',battle_expired:'Savaş süresi doldu.',turn_cooldown:'Yeni hamle için biraz bekle.'} as any)[result.reason]||'Hamle başarısız.',true);
+ if(result.state==='won'){for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'defeat','boss:'+result.battle.opponentId.split(':')[1],1);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)wallet.coins+=qr.rewards.coins;}wallet.rpg=profile;persist();
+ const text=result.state==='won'?`🏆 Zafer! **${result.rewards?.xp} karakter XP** ve **${result.rewards?.professionXp} meslek XP** kazandın.\n${result.rewards?.items.map(x=>`${x.itemId} ×${x.quantity}`).join(', ')||'Ek ganimet yok.'}`:result.state==='lost'?'💀 Yenildin. Yaralanmalarını kontrol et.':result.state==='fled'?'🏃 Savaştan çekildin.':`Verdiğin hasar: **${result.damage}**\nBoss canı: **${result.battle.opponentHealth}/${result.battle.maxOpponentHealth}**\nSenin canın: **${result.battle.playerHealth}/${result.battle.maxPlayerHealth}**`;
+ return reply(c,{embeds:[new EmbedBuilder().setColor(result.state==='won'?0x2ecc71:result.state==='lost'?0xe74c3c:0xe67e22).setTitle('⚔️ '+result.battle.opponentName).setDescription(text)]});
+},()=>base('meslek-boss-hamle','Meslek bossu savaşında hamle yapar.').addStringOption(o=>o.setName('hamle').setDescription('Saldır, savun veya kaç').setRequired(true).addChoices({name:'Saldır',value:'attack'},{name:'Savun',value:'defend'},{name:'Kaç',value:'flee'})));
+simple('bosslar','Bölgesel dünya bosslarını ve gereksinimlerini listeler.',async c=>{
+ const lines=RPG_WORLD_BOSSES.map(b=>`**${b.name}** — ${b.regionId}\nSeviye ${b.minCharacterLevel} • Grup ${b.minPartySize}-${Math.min(4,b.maxPartySize)} kişi\nÇağırma: ${b.summonRequirements.map(x=>`${x.itemId} ×${x.quantity}`).join(', ')}`).join('\n\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0xc0392b).setTitle('🐉 NEXUS | Dünya Bossları').setDescription(lines.slice(0,4000))]});
+});
+simple('boss-cagir','Grup lideri olarak bölgesel dünya bossunu çağırır.',async c=>{
+ const bossId=str(c,'boss');const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.worldBossState=data.rpg.worldBossState||createWorldBossState();const group=Object.values(data.rpg.groups||{}).find((g:any)=>g.leaderId===c.member.id) as any;
+ if(!group)return reply(c,'Dünya bossu çağırmak için dört kişiye kadar bir macera grubu kurmalı ve lider olmalısın.',true);
+ const profiles:Record<string,any>={};for(const m of group.members){const wallet=user(c.guild.id,m.userId);profiles[m.userId]=ensureRpgProfile(wallet.rpg);}
+ const result=startWorldBoss(data.rpg.worldBossState,bossId,group,profiles);
+ if(!result.ok)return reply(c,({unknown_boss:'Dünya bossu bulunamadı.',party_size:'Grup üye sayısı bu boss için uygun değil.',boss_cooldown:'Bu bossun çağırma bekleme süresi dolmadı.',level_required:'Grubundaki herkes gerekli karakter seviyesine ulaşmış olmalı.',wrong_region:'Bütün grup üyeleri bossun bulunduğu bölgede olmalı.',member_in_combat:'Grup üyelerinden biri başka bir savaşta.',leader_profile_missing:'Grup liderinin karakter profili bulunamadı.'} as any)[result.reason]||`Boss çağrılamadı: ${result.reason}`,true);
+ for(const [id,profile] of Object.entries(profiles))user(c.guild.id,id).rpg=profile;persist();return reply(c,`🐉 **${RPG_WORLD_BOSSES.find(b=>b.id===bossId)?.name||bossId}** çağrıldı! Grup üyeleri /boss-vur komutuyla saldırabilir.\nBoss canı: **${result.encounter.health.toLocaleString('tr-TR')}**`);
+},()=>base('boss-cagir','Grup lideri olarak bölgesel dünya bossunu çağırır.').addStringOption(o=>o.setName('boss').setDescription('Boss kimliği').setRequired(true)));
+simple('boss-vur','Aktif dünya bossuna saldırır.',async c=>{
+ const bossId=str(c,'boss');const data=guild(c.guild.id);const state=data.rpg?.worldBossState;if(!state)return reply(c,'Aktif dünya bossu bulunamadı.',true);
+ const encounter=state.encounters?.[bossId];if(!encounter)return reply(c,'Bu boss için aktif karşılaşma yok.',true);
+ const profiles:Record<string,any>={};for(const id of encounter.participants)profiles[id]=ensureRpgProfile(user(c.guild.id,id).rpg);
+ const result=attackWorldBoss(state,bossId,c.member.id,profiles);
+ if(!result.ok)return reply(c,({encounter_missing:'Karşılaşma bulunamadı.',encounter_ended:'Boss savaşı sona ermiş.',not_participant:'Bu boss savaşına katılmıyorsun.',participant_inactive:'Savaş durumun aktif değil.',participant_defeated:'Bu savaşta yenildin.',turn_cooldown:'Yeni saldırı için birkaç saniye bekle.',encounter_expired:'Boss karşılaşmasının süresi doldu.'} as any)[result.reason]||`Saldırı başarısız: ${result.reason}`,true);
+ for(const [id,profile] of Object.entries(profiles)){if(result.encounter.status==='won'){for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'defeat','boss:'+bossId,1);if(qr.ok&&qr.completed&&qr.rewards)user(c.guild.id,id).coins+=qr.rewards.coins;}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)user(c.guild.id,id).coins+=qr.rewards.coins;}user(c.guild.id,id).rpg=profile;}persist();
+ const phase=RPG_WORLD_BOSSES.find(b=>b.id===bossId)?.phases.find(p=>p.id===result.encounter.phaseId);
+ const outcome=result.encounter.status==='won'?'🏆 Dünya bossu yenildi! Katılımcıların ödülleri karakterlerine işlendi.':result.encounter.status==='failed'?'💀 Grup yenildi; karşılaşma sona erdi.':`Verdiğin hasar: **${result.damage}**\nAldığın hasar: **${result.playerDamage}**\nBoss canı: **${result.encounter.health.toLocaleString('tr-TR')}/${result.encounter.maxHealth.toLocaleString('tr-TR')}**\nSenin canın: **${result.encounter.healthByUser[c.member.id]}**`;
+ return reply(c,{embeds:[new EmbedBuilder().setColor(result.encounter.status==='won'?0x2ecc71:0xe74c3c).setTitle('🐉 '+(RPG_WORLD_BOSSES.find(b=>b.id===bossId)?.name||bossId)).setDescription(`${phase?`**Aşama:** ${phase.name}\n`:''}${outcome}`)]});
+},()=>base('boss-vur','Aktif dünya bossuna saldırır.').addStringOption(o=>o.setName('boss').setDescription('Boss kimliği').setRequired(true)));
+simple('yaralanmalar','Aktif karakter yaralanmalarını gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const injuries=getActiveInjuries(profile);wallet.rpg=profile;persist();
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0xe67e22).setTitle('🩹 NEXUS | Yaralanmalar').setDescription(injuries.map(i=>`**${i.name}** — ${i.severity}\n${i.description}\nTedavi: ${i.treatmentItemId} • Bitiş: <t:${Math.floor(i.expiresAt/1000)}:R>\nKimlik: \`${i.id}\``).join('\n\n')||'Aktif yaralanman yok.')]});
+});
+simple('tedavi','Uygun eşya kullanarak bir yaralanmayı tedavi eder.',async c=>{
+ const injuryId=str(c,'yaralanma');const itemId=str(c,'esya');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=treatInjury(profile,injuryId,itemId);
+ if(!result.ok)return reply(c,({injury_not_found:'Yaralanma bulunamadı.',wrong_treatment:'Bu yaralanma için uygun tedavi eşyası değil.',treatment_item_missing:'Gerekli tedavi eşyası envanterinde yok.'} as any)[result.reason]||'Tedavi başarısız.',true);
+ wallet.rpg=profile;persist();return reply(c,`🩹 **${result.removed.name}** tedavi edildi.`);
+},()=>base('tedavi','Uygun eşya kullanarak bir yaralanmayı tedavi eder.').addStringOption(o=>o.setName('yaralanma').setDescription('Yaralanma kimliği').setRequired(true)).addStringOption(o=>o.setName('esya').setDescription('Tedavi eşyası kimliği').setRequired(true)));
+simple('istatistik-puan','Karakter özellik puanlarını dağıtır.',async c=>{
+ const attribute=str(c,'ozellik');const amount=num(c,'puan',0);const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=allocateStatPoints(profile,attribute,amount);
+ if(!result.ok)return reply(c,({invalid_attribute:'Özellik güç, dayanıklılık, çeviklik veya zeka olmalı.',invalid_amount:'Puan miktarı 1-100 arasında olmalı.',insufficient_points:'Yeterli dağıtılabilir özellik puanın yok.',attribute_cap:'Bu özellik 500 puan sınırına ulaşıyor.'} as any)[result.reason]||'Puan dağıtılamadı.',true);
+ wallet.rpg=profile;persist();return reply(c,`📈 **${result.attribute}** özelliğine **${result.allocated}** puan eklendi. Kalan puan: **${result.remaining}**.`);
+},()=>base('istatistik-puan','Karakter özellik puanlarını dağıtır.').addStringOption(o=>o.setName('ozellik').setDescription('Güç, dayanıklılık, çeviklik veya zeka').setRequired(true).addChoices({name:'Güç',value:'strength'},{name:'Dayanıklılık',value:'vitality'},{name:'Çeviklik',value:'agility'},{name:'Zekâ',value:'intelligence'})).addIntegerOption(o=>o.setName('puan').setDescription('Dağıtılacak puan').setRequired(true).setMinValue(1).setMaxValue(100)));
+simple('ustalik','100. seviye sonrası sınırsız ustalık gelişimini gösterir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0xf1c40f).setTitle('✨ NEXUS | Ustalık').setDescription(`Karakter seviyesi: **${profile.characterLevel||1}/100**\nUstalık seviyesi: **${profile.masteryLevel||0}**\nUstalık XP: **${profile.masteryXp||0} / ${xpForMasteryLevel(profile.masteryLevel||0)}**\nUstalık puanı: **${profile.masteryPoints||0}**\n\n**Unvanlar:** ${(profile.masteryTitles||[]).join(', ')||'Henüz kazanılmadı.'}\n**Kozmetik ödüller:** ${(profile.masteryCosmetics||[]).join(', ')||'Henüz kazanılmadı.'}`)]});
+});
+simple('inanc','NEXUS dünyasının sekiz inanç geleneğini ve ritüellerini anlatır.',async c=>{
+ const lines=RPG_FAITH_TRADITIONS.map(f=>`**${f.name}**\n${f.belief}\nRitüel: ${f.ritual}\nYasak: ${f.taboo}\nKutsal yer: ${f.holySite}`).join('\n\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x8e44ad).setTitle('🕯️ NEXUS | İnanç Gelenekleri').setDescription(lines.slice(0,4000))]});
+});
+simple('kadim-bilgi','NEXUS dünyasının sekiz kadim gücünü anlatır.',async c=>{
+ const lines=RPG_ANCIENT_POWERS.map(p=>`${p.symbol} **${p.name}** — ${p.domain}\n_${p.teaching}_`).join('\n\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x8e44ad).setTitle('✨ NEXUS | Sekiz Kadim Güç').setDescription(lines)]});
+});
+simple('kulturler','Kadim uygarlıkları ve kültürlerini tanıtır.',async c=>{
+ const lines=RPG_ANCIENT_CULTURES.map(x=>`**${x.name}**\n${x.summary}\nDeğerler: ${x.values.join(', ')}`).join('\n\n');
+ return reply(c,{embeds:[new EmbedBuilder().setColor(0x8e44ad).setTitle('🏺 NEXUS | Kadim Kültürler').setDescription(lines.slice(0,4000))]});
+});
+simple('npc-pazar','Bulunduğun bölgedeki tüccardan eşya alır veya ona eşya satar.',async c=>{
+ const action=str(c,'islem');const itemId=str(c,'esya');const quantity=num(c,'adet',1);const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const regionId=profile.currentRegionId||'baslangic_duzlugu';
+ if(!RPG_NPCS.some(n=>n.regionId===regionId&&n.role==='merchant'))return reply(c,'Bulunduğun bölgede tüccar bulunmuyor.',true);
+ const data=guild(c.guild.id);data.rpg=data.rpg||{};data.rpg.npcShopState=data.rpg.npcShopState||createNpcShopState();
+ const result=action==='buy'?buyFromNpc(data.rpg.npcShopState,profile,wallet,regionId,itemId,quantity):sellToNpc(data.rpg.npcShopState,profile,wallet,regionId,itemId,quantity);
+ wallet.rpg=profile;persist();
+ if(!result.ok)return reply(c,({unknown_item:'Bu eşya katalogda bulunmuyor.',not_tradeable:'Bu eşya NPC ticaretine uygun değil.',invalid_quantity:'Adet 1-100 arasında olmalı.',price_overflow:'İşlem tutarı güvenli sınırı aşıyor.',insufficient_coins:'Bu alışveriş için yeterli ◈ yok.',out_of_stock:'Tüccarın bu eşyadan yeterli stoğu yok.',insufficient_items:'Satmak için yeterli eşyan yok.',stock_full:'Tüccarın bu nadir eşya için deposu dolu.',balance_overflow:'Cüzdan bakiyesi güvenli sınırı aşacak.'} as any)[result.reason]||'NPC ticareti tamamlanamadı.',true);
+ return reply(c,`${action==='buy'?'🛒 Satın aldın':'💰 Sattın'}: **${itemId} ×${result.quantity}**\\nBirim fiyat: **${result.unitPrice.toLocaleString('tr-TR')} ◈**\\nToplam: **${result.total.toLocaleString('tr-TR')} ◈**\\n${result.stock===null?'Stok: Sınırsız':`Kalan stok: ${result.stock}` }\\nCüzdan: **${wallet.coins.toLocaleString('tr-TR')} ◈**`);
+},()=>base('npc-pazar','Bulunduğun bölgedeki tüccardan eşya alır veya ona eşya satar.').addStringOption(o=>o.setName('islem').setDescription('Alış veya satış').setRequired(true).addChoices({name:'Satın al',value:'buy'},{name:'Sat',value:'sell'})).addStringOption(o=>o.setName('esya').setDescription('Eşya kimliği').setRequired(true)).addIntegerOption(o=>o.setName('adet').setDescription('İşlem adedi').setRequired(true).setMinValue(1).setMaxValue(100)));
+simple('npc-konus','Bulunduğun bölgedeki bir NPC ile konuşur.',async c=>{
+ const npcId=str(c,'npc');const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const npc=getNpc(npcId);
+ if(!npc||npc.regionId!==(profile.currentRegionId||'baslangic_duzlugu'))return reply(c,'Bu NPC bulunduğun bölgede değil veya bulunamadı.',true);
+ let completed=0;for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'interact',npcId,1);if(qr.ok&&qr.completed){completed++;if(qr.rewards)wallet.coins+=qr.rewards.coins;}}
+ wallet.rpg=profile;persist();return reply(c,{embeds:[new EmbedBuilder().setColor(0x9b59b6).setTitle('🗣️ '+npc.name).setDescription(`_${npc.personality}_\n\n${npc.description}\n\n**Yerleşim:** ${npc.settlementName||'Bölge'}\n**Hizmetleri:** ${npc.services.join(', ')}${completed?`\n\n📜 ${completed} görev tamamlandı.`:''}`)]});
+},()=>base('npc-konus','Bulunduğun bölgedeki bir NPC ile konuşur.').addStringOption(o=>o.setName('npc').setDescription('NPC kimliği').setRequired(true)));
+
 // GENERAL
+simple('uzmanlasma','Meslek uzmanlığını seç veya değiştir.',async c=>{
+ const wallet=user(c.guild.id,c.member.id);
+ const profile=wallet.rpg||{};
+ const current=profile.mainSpecialization;
+ const count=profile.specializationChangeCount??0;
+ const sessionId=Date.now().toString(36)+Math.random().toString(36).slice(2,9);
+ specializationSessions.set(sessionId,{
+  guildId:c.guild.id,
+  userId:c.member.id,
+  expectedProfessionId:current?.professionId||null,
+  expectedSpecializationId:current?.specializationId||null,
+  expectedCount:count,
+  createdAt:Date.now()
+ });
+ const menu=new StringSelectMenuBuilder()
+  .setCustomId('spec:profession:'+sessionId)
+  .setPlaceholder('Bir meslek sec')
+  .addOptions(RPG_PROFESSIONS.map(p=>({
+   label:p.name.slice(0,100),
+   value:p.id,
+   description:p.description.slice(0,100)
+  })));
+ const payload={
+  embeds:[new EmbedBuilder()
+   .setColor(0x5865F2)
+   .setTitle('NEXUS | Meslek Uzmanligi')
+   .setDescription('Uzmanlasmak istedigin meslegi sec.\n\nIlk uzmanlik secimin ucretsizdir. Sonraki degisikliklerde onayli ucret tarifesi uygulanir.')],
+  components:[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)]
+ };
+ if(c.interaction)return c.interaction.reply({...payload,flags:MessageFlags.Ephemeral});
+ if(c.message)return c.message.reply(payload);
+},()=>base('uzmanlasma','Meslek uzmanligini sec veya degistir.'),['uzmanlik']);
 simple('ping','Bot gecikmesini gösterir.',async c=>reply(c,`🏓 Pong! API: **${client.ws.ping}ms**`));
 simple('help','NEXUS komutlarını kategoriler halinde gösterir.',async c=>{
  const cfg=guild(c.guild.id).config;
@@ -145,77 +482,10 @@ function economyEmbed(title:string,desc:string){return new EmbedBuilder().setCol
 simple('paraekle','Yalnızca bot sahibinin kullanabildiği para ekleme komutu.',async c=>{if(!ownerIds.has(c.member.id))return reply(c,'❌ Bu komut yalnızca bot sahibine özeldir.',true);const target=userOpt(c),n=num(c,'amount');if(n<=0)return reply(c,'❌ Geçerli bir miktar gir.',true);const u=user(c.guild.id,target.id),g=guild(c.guild.id);u.coins+=n;mutate(()=>{});return reply(c,{embeds:[economyEmbed('💰 Para Eklendi',`${target} kullanıcısına **${n.toLocaleString('tr-TR')} ${g.config.currency}** eklendi.\n\nYeni bakiye: **${u.coins.toLocaleString('tr-TR')} ${g.config.currency}**`)]});},()=>base('paraekle','Yalnızca bot sahibinin kullanabildiği para ekleme komutu.').addUserOption(o=>o.setName('user').setDescription('Para eklenecek kullanıcı').setRequired(true)).addIntegerOption(o=>o.setName('amount').setDescription('Eklenecek miktar').setRequired(true).setMinValue(1)));
 simple('ekonomi','Ekonomi merkezini gösterir.',async c=>{const u=user(c.guild.id,c.member.id),g=guild(c.guild.id);const e=economyEmbed('Ekonomi Merkezi',`**${c.member.displayName}**\n\n👛 Cüzdan\n**${u.coins.toLocaleString('tr-TR')} ${g.config.currency}**\n\n🏦 Banka\n**${u.bank.toLocaleString('tr-TR')} ${g.config.currency}**`);const row=new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId('eco:balance').setLabel('💰 Bakiye').setStyle(ButtonStyle.Primary),new ButtonBuilder().setCustomId('eco:ranking').setLabel('🏆 Zenginler').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('eco:games').setLabel('🎲 Oyunlar').setStyle(ButtonStyle.Success));return reply(c,{embeds:[e],components:[row]});});
 simple('balance','Bakiye gösterir.',async c=>{const u=user(c.guild.id,c.member.id),g=guild(c.guild.id);return reply(c,{embeds:[economyEmbed('💰 Bakiye',`👛 **Cüzdan**\n${u.coins.toLocaleString('tr-TR')} ${g.config.currency}\n\n🏦 **Banka**\n${u.bank.toLocaleString('tr-TR')} ${g.config.currency}`)]});});
-simple('daily','Günlük ödülünü alır.',async c=>{const u=user(c.guild.id,c.member.id),now=Date.now();if(now-u.lastDaily<86400000)return reply(c,{embeds:[economyEmbed('⏳ Günlük Ödül',`Bir sonraki ödülünü <t:${Math.floor((u.lastDaily+86400000)/1000)}:R> alabilirsin.`)]});u.coins+=250;u.lastDaily=now;mutate(()=>{});return reply(c,{embeds:[economyEmbed('🎁 Günlük Ödül',`Tebrikler! **250 ◈** kazandın.\n\nYeni bakiye: **${u.coins} ◈**`)]});});
+simple('daily','Günlük giriş serisi ödülünü alır.',async c=>{const u=user(c.guild.id,c.member.id),result=claimDailyStreak(u);if(!result.ok){if(result.reason==='cooldown')return reply(c,{embeds:[economyEmbed('⏳ Günlük Seri',`Bir sonraki ödülünü <t:${Math.floor((result.nextAt||Date.now())/1000)}:R> alabilirsin.\nMevcut seri: **${result.streak||0} gün**`)]});return reply(c,'Günlük ödül şu anda güvenli biçimde hesaplanamadı.',true);}mutate(()=>{});return reply(c,{embeds:[economyEmbed('🔥 Günlük Giriş Serisi',`**${result.streak}. gün** ödülünü aldın!\n\nGünlük ödül: **${result.baseReward} ◈**${result.milestoneBonus?`\n7 günlük seri bonusu: **${result.milestoneBonus} ◈**`:''}\nToplam: **${result.reward} ◈**\n\nYeni bakiye: **${result.balance.toLocaleString('tr-TR')} ◈**`)]});});
 simple('deposit','Bankaya para yatırır.',async c=>{const u=user(c.guild.id,c.member.id),n=Math.min(num(c,'amount',0),u.coins);if(n<=0)return reply(c,'❌ Geçerli miktar yok.',true);u.coins-=n;u.bank+=n;mutate(()=>{});return reply(c,{embeds:[economyEmbed('🏦 Para Yatırıldı',`**${n.toLocaleString('tr-TR')} ◈** bankaya yatırıldı.\n\n👛 Cüzdan: **${u.coins} ◈**\n🏦 Banka: **${u.bank} ◈**`)]});},()=>base('deposit','Bankaya para yatırır.').addIntegerOption(o=>o.setName('amount').setDescription('Miktar').setRequired(true).setMinValue(1)));
 simple('withdraw','Bankadan para çeker.',async c=>{const u=user(c.guild.id,c.member.id),n=Math.min(num(c,'amount',0),u.bank);if(n<=0)return reply(c,'❌ Geçerli miktar yok.',true);u.bank-=n;u.coins+=n;mutate(()=>{});return reply(c,{embeds:[economyEmbed('💵 Para Çekildi',`**${n.toLocaleString('tr-TR')} ◈** bankadan çekildi.\n\n👛 Cüzdan: **${u.coins} ◈**\n🏦 Banka: **${u.bank} ◈**`)]});},()=>base('withdraw','Bankadan para çeker.').addIntegerOption(o=>o.setName('amount').setDescription('Miktar').setRequired(true).setMinValue(1)));
 simple('pay','Başka üyeye para yollar.',async c=>{const to=userOpt(c),u=user(c.guild.id,c.member.id),n=num(c,'amount');if(to.id===c.member.id||n<=0||u.coins<n)return reply(c,'❌ Geçersiz işlem veya yetersiz bakiye.',true);u.coins-=n;user(c.guild.id,to.id).coins+=n;mutate(()=>{});return reply(c,{embeds:[economyEmbed('💸 Transfer Tamamlandı',`${to} kişisine **${n.toLocaleString('tr-TR')} ◈** gönderildi.\n\nYeni bakiyen: **${u.coins.toLocaleString('tr-TR')} ◈**`)]});},()=>base('pay','Para gönderir.').addUserOption(o=>o.setName('user').setDescription('Alıcı').setRequired(true)).addIntegerOption(o=>o.setName('amount').setDescription('Miktar').setRequired(true).setMinValue(1)));
-simple('weekly','Haftalık ödülünü alır.',async c=>{const u=user(c.guild.id,c.member.id),now=Date.now(),wait=7*86400000;if(now-u.lastWeekly<wait)return reply(c,{embeds:[economyEmbed('⏳ Haftalık Ödül',`Tekrar <t:${Math.floor((u.lastWeekly+wait)/1000)}:R> alabilirsin.`)]});u.coins+=1500;u.lastWeekly=now;mutate(()=>{});return reply(c,{embeds:[economyEmbed('🎁 Haftalık Ödül','**1.500 ◈** hesabına eklendi.')]});});
-// NEXUS RPG — meslekler, kaynaklar, ekipman, geliştirme ve savaş
-const RPG_JOBS:any={
- ormanci:{name:'Ormancı',cooldown:60*60*1000,min:100,max:160,drops:[['sert_agac',2,4],['recine',1,3],['kadim_lif',1,1,0.06]]},
- madenci:{name:'Madenci',cooldown:75*60*1000,min:130,max:200,drops:[['demir_cevheri',2,4],['bakir_cevheri',1,3],['nadir_kristal',1,1,0.07]]},
- avci:{name:'Avcı',cooldown:120*60*1000,min:200,max:320,drops:[['yaratik_derisi',1,3],['pençe',1,2],['boss_ozu',1,1,0.025]]},
- simyaci:{name:'Simyacı',cooldown:90*60*1000,min:150,max:230,drops:[['sifali_ot',2,4],['simya_ozu',1,2],['buyulu_kristal',1,1,0.06]]},
- zanaatkar:{name:'Zanaatkâr',cooldown:75*60*1000,min:120,max:210,drops:[['hurda_metal',2,4],['mekanik_parca',1,3],['gelistirme_cekirdegi',1,1,0.04]]}
-};
-const RPG_ITEMS:any={
- sert_agac:{name:'Sert Ağaç',price:38},recine:{name:'Reçine',price:24},kadim_lif:{name:'Kadim Lif',price:145},
- demir_cevheri:{name:'Demir Cevheri',price:42},bakir_cevheri:{name:'Bakır Cevheri',price:30},nadir_kristal:{name:'Nadir Kristal',price:180},
- yaratik_derisi:{name:'Yaratık Derisi',price:55},pençe:{name:'Yaratık Pençesi',price:48},boss_ozu:{name:'Boss Özü',price:450},
- sifali_ot:{name:'Şifalı Ot',price:28},simya_ozu:{name:'Simya Özü',price:72},buyulu_kristal:{name:'Büyülü Kristal',price:210},
- hurda_metal:{name:'Hurda Metal',price:22},mekanik_parca:{name:'Mekanik Parça',price:58},gelistirme_cekirdegi:{name:'Geliştirme Çekirdeği',price:260},
- celik_kalas:{name:'İşlenmiş Çelik',price:110},yay_kirişi:{name:'Yay Kirişi',price:85},ok_demeti:{name:'Ok Demeti',price:35},mana_iksiri:{name:'Mana İksiri',price:90}
-};
-const RPG_WEAPONS:any={
- demir_kilic:{name:'Demir Kılıç',kind:'Kılıç',rarity:'Sıradan',price:700,attack:18,recipe:{demir_cevheri:4,hurda_metal:2,sert_agac:1}},
- avci_yayi:{name:'Avcı Yayı',kind:'Yay',rarity:'Nadir',price:1800,attack:25,recipe:{sert_agac:4,yaratik_derisi:2,yay_kirişi:1}},
- celik_balti:{name:'Çelik Balta',kind:'Balta',rarity:'Nadir',price:2100,attack:32,recipe:{demir_cevheri:5,hurda_metal:4,mekanik_parca:1}},
- kemik_hancer:{name:'Kemik Hançer',kind:'Hançer',rarity:'Nadir',price:1600,attack:21,recipe:{yaratik_derisi:2,pençe:3,demir_cevheri:1}},
- kristal_asa:{name:'Kristal Asa',kind:'Asa',rarity:'Destansı',price:4200,attack:38,recipe:{sert_agac:3,buyulu_kristal:2,simya_ozu:3,mekanik_parca:1}},
- kadim_mizrak:{name:'Kadim Mızrak',kind:'Mızrak',rarity:'Destansı',price:3900,attack:35,recipe:{sert_agac:3,demir_cevheri:4,kadim_lif:1,simya_ozu:1}},
- ejderha_kilici:{name:'Ejderha Dişi Kılıcı',kind:'Kılıç',rarity:'Efsanevi',price:12000,attack:58,bossOnly:true,recipe:{}}
-};
-const RPG_ARMOR:any={
- deri_zirh:{name:'Deri Zırh',slot:'zirh',defense:8,price:600,recipe:{yaratik_derisi:4,sert_agac:1}},
- celik_zirh:{name:'Çelik Zırh',slot:'zirh',defense:22,price:2400,recipe:{demir_cevheri:6,hurda_metal:4,yaratik_derisi:2}},
- ahsap_kalkan:{name:'Ahşap Kalkan',slot:'kalkan',defense:7,price:450,recipe:{sert_agac:3,recine:2}},
- celik_kalkan:{name:'Çelik Kalkan',slot:'kalkan',defense:18,price:1700,recipe:{demir_cevheri:4,hurda_metal:3,yaratik_derisi:1}},
- avci_basligi:{name:'Avcı Başlığı',slot:'baslik',defense:5,price:500,recipe:{yaratik_derisi:3,pençe:1}},
- gezgin_cizmesi:{name:'Gezgin Çizmesi',slot:'cizme',defense:4,price:400,recipe:{yaratik_derisi:2,sert_agac:1,recine:1}}
-};
-function rpgState(u:any){u.rpg??={professionLevel:1,professionXp:0,lastWork:0,items:{},weapons:[],armor:[],equipment:{},lastBattle:0,wins:0,losses:0};u.rpg.items??={};u.rpg.weapons??=[];u.rpg.armor??=[];u.rpg.equipment??={};return u.rpg;}
-function rpgItemName(id:string){return RPG_ITEMS[id]?.name||RPG_WEAPONS[id]?.name||RPG_ARMOR[id]?.name||id;}
-function rpgHas(items:any,need:any){return Object.entries(need).every(([k,v]:any)=>(items[k]||0)>=v);}
-function rpgSpend(items:any,need:any){for(const [k,v] of Object.entries(need) as any)items[k]-=v;}
-function rpgCostText(need:any){return Object.entries(need).map(([k,v]:any)=>`${rpgItemName(k)} ×${v}`).join(', ');}
-function rpgInventoryText(u:any){const r=rpgState(u),items=Object.entries(r.items).filter(([_,n]:any)=>n>0).map(([k,n]:any)=>`• ${rpgItemName(k)} ×${n}`).join('\n')||'Malzeme yok';const weapons=r.weapons.map((w:any)=>`• **${w.name}** [${w.rarity}] +${w.level} — ID: \`${w.id}\` • Saldırı ${w.attack+w.level*3}${r.equippedWeapon===w.id?' • **Kuşanılı**':''}`).join('\n')||'Silah yok';const armor=r.armor.map((a:any)=>`• **${a.name}** (${a.slot}) — ID: \`${a.id}\` • Savunma ${a.defense}${r.equipment[a.slot]===a.id?' • **Kuşanılı**':''}`).join('\n')||'Zırh/kalkan yok';return {items,weapons,armor};}
-function addRpgItem(r:any,id:string,n:number){r.items[id]=(r.items[id]||0)+n;}
-function makeRpgWeapon(id:string){const d=RPG_WEAPONS[id];return {id:`w${Date.now().toString(36)}${Math.random().toString(36).slice(2,6)}`,catalogId:id,name:d.name,kind:d.kind,rarity:d.rarity,level:0,attack:d.attack,special:d.kind==='Asa'?'Element özü':d.kind==='Yay'?'Delici atış':undefined};}
-function makeRpgArmor(id:string){const d=RPG_ARMOR[id];return {id:`a${Date.now().toString(36)}${Math.random().toString(36).slice(2,6)}`,catalogId:id,name:d.name,slot:d.slot,defense:d.defense,level:0};}
-
-simple('meslek','Bir meslek seç veya mevcut uzmanlığını görüntüle.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),action=(c.interaction?.options.getString('action')||c.args.shift()||'bilgi').toLowerCase(),job=(c.interaction?.options.getString('job')||c.args.shift()||'').toLowerCase();if(action==='sec'||action==='seç'){if(!RPG_JOBS[job])return reply(c,`❌ Geçerli meslek: ${Object.keys(RPG_JOBS).join(', ')}. Meslek değiştirme 7 günde bir ücretsizdir.`,true);if(r.profession&&Date.now()-(r.lastProfessionChange||0)<7*86400000)return reply(c,`❌ Mesleğini tekrar değiştirmek için <t:${Math.floor((r.lastProfessionChange+7*86400000)/1000)}:R> beklemelisin.`,true);if(r.profession&&r.profession!==job&&u.coins<500)return reply(c,'❌ Meslek değiştirmek için 500 ◈ gerekiyor.',true);if(r.profession&&r.profession!==job)u.coins-=500;r.profession=job;r.lastProfessionChange=Date.now();mutate(()=>{});return reply(c,{embeds:[economyEmbed('🧭 Meslek Seçildi',`**${RPG_JOBS[job].name}** mesleğini seçtin.\n\n${RPG_JOBS[job].min}–${RPG_JOBS[job].max} ◈ temel kazanç, ${Math.round(RPG_JOBS[job].cooldown/60000)} dakika çalışma bekleme süresi.\n\nMeslek değiştirme bekleme süresi: 7 gün.`)]});}const j=r.profession?RPG_JOBS[r.profession]:null;return reply(c,{embeds:[economyEmbed('🧭 Nexus Meslek Rehberi',`${j?`**Mevcut mesleğin:** ${j.name}\n**Meslek seviyesi:** ${r.professionLevel}\n**Meslek XP:** ${r.professionXp}\n**Kazanç:** ${j.min}–${j.max} ◈\n**Bekleme:** ${Math.round(j.cooldown/60000)} dakika`:'Henüz meslek seçmedin.'}\n\n${Object.entries(RPG_JOBS).map(([id,x]:any)=>`**${x.name}** — ${x.min}–${x.max} ◈ / ${Math.round(x.cooldown/60000)} dk`).join('\n')}\n\nSeçmek için \`/meslek action:seç job:madenci\` kullan.`)]});},()=>base('meslek','Bir meslek seç veya mevcut uzmanlığını görüntüle.').addStringOption(o=>o.setName('action').setDescription('İşlem').setRequired(true).addChoices({name:'Bilgi',value:'bilgi'},{name:'Meslek seç',value:'sec'})).addStringOption(o=>o.setName('job').setDescription('Seçilecek meslek').addChoices(...Object.entries(RPG_JOBS).map(([value,j]:any)=>({name:j.name,value})))));
-
-// /work now produces profession-specific resources while retaining the existing economy balance.
-commands.set('work',{name:'work',description:'Mesleğine göre çalışır.',execute:async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),now=Date.now();if(!r.profession)return reply(c,'🧭 Önce `/meslek` komutuyla bir meslek seçmelisin.',true);const job=RPG_JOBS[r.profession];if(now-r.lastWork<job.cooldown)return reply(c,{embeds:[economyEmbed('⏳ Çalışma Bekleme Süresi',`Bir sonraki çalışma hakkın <t:${Math.floor((r.lastWork+job.cooldown)/1000)}:R> alabilirsin.`)]});const money=job.min+Math.floor(Math.random()*(job.max-job.min+1))+Math.min(25,(r.professionLevel-1)*2);const drops:string[]=[];for(const [id,min,max,chance] of job.drops){if(chance!==undefined&&Math.random()>chance)continue;const amount=min+Math.floor(Math.random()*(max-min+1));addRpgItem(r,id,amount);drops.push(`${rpgItemName(id)} ×${amount}`);}u.coins+=money;r.lastWork=now;r.professionXp+=10+Math.floor(Math.random()*8);const levelBefore=r.professionLevel;r.professionLevel=Math.min(20,1+Math.floor(r.professionXp/100));mutate(()=>{});return reply(c,{embeds:[economyEmbed('💼 Meslek Çalışması',`**Meslek:** ${job.name} • Seviye ${r.professionLevel}\n**Kazanç:** +${money} ◈\n**Bulunan malzemeler:**\n${drops.join('\n')||'Bu sefer malzeme bulamadın.'}${r.professionLevel>levelBefore?`\n\n🎉 **Meslek seviyen ${r.professionLevel} oldu!**`:''}\n\nYeni bakiye: **${u.coins.toLocaleString('tr-TR')} ◈**`)]});},builder:()=>base('work','Mesleğine göre çalışır.')});
-
-simple('envanter','RPG malzemelerini, silahlarını ve ekipmanını gösterir.',async c=>{const u=user(c.guild.id,c.member.id),v=rpgInventoryText(u);return reply(c,{embeds:[new EmbedBuilder().setColor(0x5865f2).setTitle(`🎒 ${c.member.displayName} • Envanter`).addFields({name:'🧱 Malzemeler',value:v.items.slice(0,1024)},{name:'⚔️ Silahlar',value:v.weapons.slice(0,1024)},{name:'🛡️ Savunma ekipmanı',value:v.armor.slice(0,1024)}).setFooter({text:`Cüzdan: ${u.coins.toLocaleString('tr-TR')} ◈`})]});});
-
-simple('market','NPC marketinde malzeme ve ekipman al/sat.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),action=(c.interaction?.options.getString('action')||c.args.shift()||'liste').toLowerCase(),item=(c.interaction?.options.getString('item')||c.args.shift()||'').toLowerCase(),amount=Math.max(1,Math.min(99,c.interaction?.options.getInteger('amount')||Number(c.args.shift())||1));if(action==='liste'||action==='list'){const mats=Object.entries(RPG_ITEMS).map(([id,x]:any)=>`• \`${id}\` — ${x.name}: **${x.price} ◈**`);const weapons=Object.entries(RPG_WEAPONS).filter(([_,x]:any)=>!x.bossOnly).map(([id,x]:any)=>`• \`${id}\` — ${x.name}: **${x.price} ◈** (${x.rarity})`);const armor=Object.entries(RPG_ARMOR).map(([id,x]:any)=>`• \`${id}\` — ${x.name}: **${x.price} ◈**`);return reply(c,{embeds:[new EmbedBuilder().setColor(0xf0b232).setTitle('🏪 Nexus NPC Market').setDescription('Satın almak için `/market action:al item:demir_cevheri amount:2` kullan. Satış fiyatı, tanımlı NPC fiyatının %50’sidir.').addFields({name:'Malzemeler',value:mats.join('\n').slice(0,1024)},{name:'Silahlar',value:weapons.join('\n').slice(0,1024)},{name:'Zırh ve kalkanlar',value:armor.join('\n').slice(0,1024)})]});}if(action==='al'||action==='buy'){const def=RPG_ITEMS[item]||RPG_WEAPONS[item]||RPG_ARMOR[item];if(!def||def.bossOnly)return reply(c,'❌ Bu eşya markette satılmıyor veya yalnızca boss ganimeti olarak elde edilebilir.',true);const cost=def.price*amount;if(u.coins<cost)return reply(c,`❌ Yetersiz bakiye. Gerekli: ${cost} ◈`,true);u.coins-=cost;if(RPG_WEAPONS[item]){for(let n=0;n<amount;n++)r.weapons.push(makeRpgWeapon(item));}else if(RPG_ARMOR[item]){for(let n=0;n<amount;n++)r.armor.push(makeRpgArmor(item));}else addRpgItem(r,item,amount);mutate(()=>{});return reply(c,{embeds:[economyEmbed('🛒 Satın Alma Başarılı',`**${def.name}** ×${amount} satın alındı.\nÖdenen: **${cost} ◈**\nKalan bakiye: **${u.coins} ◈**`)]});}if(action==='sat'||action==='sell'){const wi=r.weapons.findIndex((w:any)=>w.id===item);if(wi>=0){const w=r.weapons[wi];if(r.equippedWeapon===w.id)return reply(c,'❌ Kuşanılı silahını satamazsın; önce başka silah kuşan.',true);const value=Math.floor((RPG_WEAPONS[w.catalogId]?.price||500)*0.5);r.weapons.splice(wi,1);u.coins+=value;mutate(()=>{});return reply(c,`✅ **${w.name} +${w.level}** satıldı. **+${value} ◈** kazandın.`);}const ai=r.armor.findIndex((a:any)=>a.id===item);if(ai>=0){const a=r.armor[ai];if(r.equipment[a.slot]===a.id)return reply(c,'❌ Kuşanılı zırhı satamazsın; önce başka bir parça kuşan.',true);const value=Math.floor((RPG_ARMOR[a.catalogId]?.price||300)*0.5);r.armor.splice(ai,1);u.coins+=value;mutate(()=>{});return reply(c,`✅ **${a.name}** satıldı. **+${value} ◈** kazandın.`);}const def=RPG_ITEMS[item];if(!def||(r.items[item]||0)<amount)return reply(c,'❌ Bu kadar satılabilir malzemen yok. Silahları ID koduyla satabilir veya `/parcala` ile malzemeye dönüştürebilirsin.',true);const value=Math.floor(def.price*0.5)*amount;r.items[item]-=amount;u.coins+=value;mutate(()=>{});return reply(c,`✅ ${def.name} ×${amount} satıldı. **+${value} ◈** kazandın.`);}return reply(c,'❌ İşlem `liste`, `al` veya `sat` olmalı.',true);},()=>base('market','NPC marketinde malzeme ve ekipman al/sat.').addStringOption(o=>o.setName('action').setDescription('İşlem').setRequired(true).addChoices({name:'Liste',value:'liste'},{name:'Satın al',value:'al'},{name:'Sat',value:'sat'})).addStringOption(o=>o.setName('item').setDescription('Ürün kodu; ör. demir_cevheri')).addIntegerOption(o=>o.setName('amount').setDescription('Adet').setMinValue(1).setMaxValue(99)));
-
-simple('uretim','Birden fazla mesleğin malzemelerini kullanarak silah veya zırh üretir.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),id=(c.interaction?.options.getString('item')||c.args.shift()||'').toLowerCase(),d=RPG_WEAPONS[id]||RPG_ARMOR[id];if(!d)return reply(c,'❌ Üretilebilir eşya kodu bulunamadı. `/market` listesindeki silah/zırh kodlarını kullan.',true);const need=d.recipe||{};if(!rpgHas(r.items,need))return reply(c,`❌ Eksik malzeme. Gerekli: ${rpgCostText(need)}`,true);rpgSpend(r.items,need);if(RPG_WEAPONS[id])r.weapons.push(makeRpgWeapon(id));else r.armor.push(makeRpgArmor(id));mutate(()=>{});return reply(c,`⚒️ **${d.name}** üretildi!\nKullanılan malzemeler: ${rpgCostText(need)}${RPG_WEAPONS[id]?'\nYeni silah ID’sini `/silahlar` ile görebilirsin.':''}`);},()=>base('uretim','Birden fazla mesleğin malzemelerini kullanarak silah veya zırh üretir.').addStringOption(o=>o.setName('item').setDescription('Üretim kodu; ör. demir_kilic').setRequired(true)));
-
-simple('pazar','Oyuncular arasında güvenli malzeme pazarı.',async c=>{const g=guild(c.guild.id),u=user(c.guild.id,c.member.id),r=rpgState(u);g.rpg??={marketListings:[]};const listings=g.rpg.marketListings as any[];const action=(c.interaction?.options.getString('action')||c.args.shift()||'liste').toLowerCase();const item=(c.interaction?.options.getString('item')||c.args.shift()||'').toLowerCase();const amount=Math.max(1,Math.min(99,c.interaction?.options.getInteger('amount')||Number(c.args.shift())||1));const price=c.interaction?.options.getInteger('price')||Number(c.args.shift())||0;const id=(c.interaction?.options.getString('id')||c.args.shift()||'').trim();if(action==='liste'||action==='list'){const expired=listings.filter(x=>x.expires<=Date.now());for(const old of expired)addRpgItem(rpgState(user(c.guild.id,old.seller)),old.item,old.amount);const active=listings.filter(x=>x.expires>Date.now());g.rpg.marketListings=active;if(expired.length)mutate(()=>{});return reply(c,{embeds:[embed('🛒 Oyuncu Pazarı',active.slice(0,20).map(x=>`**#${x.id}** • ${rpgItemName(x.item)} ×${x.amount}\nSatıcı: <@${x.seller}> • Fiyat: **${x.price} ◈**`).join('\n\n')||'Aktif ilan yok. İlan vermek için `/pazar action:ilan item:demir_cevheri amount:2 price:100` kullan.')]});}if(action==='ilan'||action==='listeme'){if(!RPG_ITEMS[item]||(r.items[item]||0)<amount||price<=0)return reply(c,'❌ Yeterli malzemen veya geçerli bir fiyat yok. Şu an oyuncu pazarında yalnızca malzemeler listelenebilir.',true);r.items[item]-=amount;const listing={id:`${Date.now().toString(36)}${Math.random().toString(36).slice(2,5)}`,seller:c.member.id,item,amount,price,created:Date.now(),expires:Date.now()+48*60*60*1000};listings.push(listing);mutate(()=>{});return reply(c,`✅ İlan açıldı: **#${listing.id}** — ${rpgItemName(item)} ×${amount}, **${price} ◈**. Eşya güvenli biçimde ilanda tutuluyor.`);}if(action==='al'||action==='buy'){const listing=listings.find(x=>x.id===id&&x.expires>Date.now());if(!listing)return reply(c,'❌ İlan bulunamadı veya süresi doldu.',true);if(listing.seller===c.member.id)return reply(c,'❌ Kendi ilanını satın alamazsın.',true);if(u.coins<listing.price)return reply(c,`❌ Bu ilan için ${listing.price} ◈ gerekiyor.`,true);const seller=user(c.guild.id,listing.seller);u.coins-=listing.price;const sellerNet=Math.floor(listing.price*0.97);seller.coins+=sellerNet;addRpgItem(r,listing.item,listing.amount);g.rpg.marketListings=listings.filter(x=>x.id!==listing.id);mutate(()=>{});return reply(c,`🤝 **${rpgItemName(listing.item)} ×${listing.amount}** satın alındı. Satıcıya ${sellerNet} ◈ aktarıldı (%3 pazar vergisi).`);}if(action==='iptal'||action==='cancel'){const listing=listings.find(x=>x.id===id&&x.seller===c.member.id);if(!listing)return reply(c,'❌ Kendi aktif ilanlarından biri bulunamadı.',true);addRpgItem(r,listing.item,listing.amount);g.rpg.marketListings=listings.filter(x=>x.id!==listing.id);mutate(()=>{});return reply(c,`↩️ İlan iptal edildi; ${rpgItemName(listing.item)} ×${listing.amount} envanterine döndü.`);}return reply(c,'İşlem `liste`, `ilan`, `al` veya `iptal` olmalı.',true);},()=>base('pazar','Oyuncular arasında güvenli malzeme pazarı.').addStringOption(o=>o.setName('action').setDescription('İşlem').setRequired(true).addChoices({name:'İlanları göster',value:'liste'},{name:'İlan aç',value:'ilan'},{name:'Satın al',value:'al'},{name:'İlan iptal et',value:'iptal'})).addStringOption(o=>o.setName('item').setDescription('Malzeme kodu; ilan açarken')).addIntegerOption(o=>o.setName('amount').setDescription('Adet').setMinValue(1).setMaxValue(99)).addIntegerOption(o=>o.setName('price').setDescription('İlanın toplam fiyatı').setMinValue(1)).addStringOption(o=>o.setName('id').setDescription('İlan ID; satın al/iptal')));
-
-simple('silahlar','Sahip olduğun silahların ID ve özelliklerini gösterir.',async c=>{const r=rpgState(user(c.guild.id,c.member.id));return reply(c,{embeds:[embed('⚔️ Silah Koleksiyonu',r.weapons.map((w:any)=>`**${w.name}** [${w.rarity}] +${w.level}\nID: \`${w.id}\` • Saldırı: **${w.attack+w.level*3}**${r.equippedWeapon===w.id?' • Kuşanılı':''}`).join('\n\n')||'Henüz silahın yok. `/market` ile satın alabilir veya bosslardan ganimet kazanabilirsin.')]});});
-simple('kusan','Silahını veya zırhını kuşanır.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),id=(c.interaction?.options.getString('id')||c.args.shift()||'').trim(),w=r.weapons.find((x:any)=>x.id===id);if(w){r.equippedWeapon=w.id;mutate(()=>{});return reply(c,`⚔️ **${w.name} +${w.level}** kuşanıldı.`);}const armor=r.armor.find((x:any)=>x.id===id);if(armor){r.equipment[armor.slot]=armor.id;mutate(()=>{});return reply(c,`🛡️ **${armor.name}** kuşanıldı.`);}return reply(c,'❌ Silah ID’si veya zırh kodu bulunamadı. `/silahlar` ya da `/market` kullan.',true);},()=>base('kusan','Silahını veya zırhını kuşanır.').addStringOption(o=>o.setName('id').setDescription('Silah veya zırh IDsi (envanterden)').setRequired(true)));
-
-simple('gelistir','Silahını veya zırhını farklı mesleklerden gelen malzemelerle geliştirir.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),id=(c.interaction?.options.getString('id')||c.args.shift()||'').trim(),w=r.weapons.find((x:any)=>x.id===id),a=r.armor.find((x:any)=>x.id===id),item=w||a;if(!item)return reply(c,'❌ Silah/zırh ID’si bulunamadı. `/envanter` veya `/silahlar` ile ID’ni öğren.',true);const next=(item.level||0)+1;if(next>15)return reply(c,'❌ Bu ekipman +15 ustalık sınırına ulaştı.',true);const need:any=next<=3?{hurda_metal:2+next,demir_cevheri:1}:{demir_cevheri:2+next,mekanik_parca:2,simya_ozu:1};if(next>=7){need.gelistirme_cekirdegi=1;need.boss_ozu=1;}if(next>=11){need.buyulu_kristal=2;need.kadim_lif=1;}const cost=next*180;if(u.coins<cost||!rpgHas(r.items,need))return reply(c,`❌ Geliştirme için eksik kaynak veya para.\n**Gerekli:** ${rpgCostText(need)}\n**Ücret:** ${cost} ◈\nNadirlik geliştirmeyi engellemez; ekipman +15'e kadar geliştirilebilir.`,true);rpgSpend(r.items,need);u.coins-=cost;item.level=next;if(w)item.attack+=2;else item.defense+=2;mutate(()=>{});return reply(c,{embeds:[economyEmbed('⚒️ Ekipman Geliştirildi',`**${item.name}** artık **+${item.level}**!\n${w?`Saldırı gücü: **${item.attack+item.level*3}**`:`Savunma: **${item.defense}**`}\nHarcanan malzemeler: ${rpgCostText(need)}\nÜcret: ${cost} ◈`)]});},()=>base('gelistir','Silahını veya zırhını farklı mesleklerden gelen malzemelerle geliştirir.').addStringOption(o=>o.setName('id').setDescription('Geliştirilecek ekipman ID').setRequired(true)));
-
-simple('parcala','Silahını geliştirme malzemelerine ayırır.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),id=(c.interaction?.options.getString('id')||c.args.shift()||'').trim(),idx=r.weapons.findIndex((w:any)=>w.id===id);if(idx<0)return reply(c,'❌ Silah ID’si bulunamadı.',true);const w=r.weapons[idx];if(r.equippedWeapon===w.id)return reply(c,'❌ Önce bu silahı başka bir silahla değiştir veya kuşanmayı bırak.',true);r.weapons.splice(idx,1);addRpgItem(r,'hurda_metal',2+w.level);if(w.level>=3)addRpgItem(r,'gelistirme_cekirdegi',1);if(['Destansı','Efsanevi'].includes(w.rarity))addRpgItem(r,'simya_ozu',1);mutate(()=>{});return reply(c,`♻️ **${w.name} +${w.level}** parçalandı.\nKazandıkların: Hurda Metal ×${2+w.level}${w.level>=3?', Geliştirme Çekirdeği ×1':''}${['Destansı','Efsanevi'].includes(w.rarity)?', Simya Özü ×1':''}.`);},()=>base('parcala','Silahını geliştirme malzemelerine ayırır.').addStringOption(o=>o.setName('id').setDescription('Parçalanacak silah ID').setRequired(true)));
-
-simple('savas','Bir yaratığa karşı sıra tabanlı kısa bir PvE savaşı yapar.',async c=>{const u=user(c.guild.id,c.member.id),r=rpgState(u),now=Date.now();if(now-r.lastBattle<60000)return reply(c,`⚔️ Yeni savaşa girmek için <t:${Math.floor((r.lastBattle+60000)/1000)}:R> bekle.`,true);const enemies=[{name:'Orman Kurdu',hp:45,attack:8,reward:90,drop:'yaratik_derisi'},{name:'Mağara Muhafızı',hp:80,attack:15,reward:170,drop:'demir_cevheri'},{name:'Gölge Avcısı',hp:120,attack:20,reward:260,drop:'simya_ozu'}];const enemy=enemies[Math.floor(Math.random()*enemies.length)];const weapon=r.weapons.find((w:any)=>w.id===r.equippedWeapon);const armor=Object.values(r.equipment).reduce((sum:any,id:any)=>{const piece=r.armor.find((x:any)=>x.id===id);return sum+(piece?.defense||0);},0);const playerAttack=(weapon?.attack||8)+(weapon?.level||0)*3;const damage=Math.max(1,playerAttack+Math.floor(Math.random()*8)-Math.floor(enemy.attack*0.25));const incoming=Math.max(0,enemy.attack+Math.floor(Math.random()*6)-armor);r.lastBattle=now;const won=damage>=enemy.hp||Math.random()<(playerAttack+armor)/(playerAttack+armor+enemy.hp/3);if(won){u.coins+=enemy.reward;addRpgItem(r,enemy.drop,1+Math.floor(Math.random()*2));r.wins++;mutate(()=>{});return reply(c,{embeds:[economyEmbed('🏆 Savaş Zaferi',`**Rakip:** ${enemy.name}\n**Verdiğin hasar:** ${damage}\n**Aldığın hasar:** ${incoming}\n**Ödül:** ${enemy.reward} ◈ ve ${rpgItemName(enemy.drop)}\n**Silah:** ${weapon?.name||'Silahsız'}\n\nZafer: ${r.wins} • Yenilgi: ${r.losses}`)]});}r.losses++;mutate(()=>{});return reply(c,{embeds:[economyEmbed('💀 Savaş Kaybedildi',`**Rakip:** ${enemy.name}\n**Verdiğin hasar:** ${damage}\n**Aldığın hasar:** ${incoming}\nBu savaşta ganimet kazanamadın.\n\nZafer: ${r.wins} • Yenilgi: ${r.losses}`)]});});
-
-simple('boss','Sunucu bossunu görüntüler, başlatır veya saldırır.',async c=>{const g=guild(c.guild.id),u=user(c.guild.id,c.member.id),r=rpgState(u),action=(c.interaction?.options.getString('action')||c.args.shift()||'durum').toLowerCase();g.rpg??={marketListings:[]};let b=g.rpg.boss;if(action==='baslat'||action==='başlat'){if(b&&b.hp>0&&b.endsAt>Date.now())return reply(c,'🐉 Sunucuda zaten aktif bir boss var. `/boss action:durum` ile bak.',true);b=g.rpg.boss={name:'Kadim Mağara Ejderhası',hp:1200,maxHp:1200,endsAt:Date.now()+60*60*1000,participants:{},damage:{}};mutate(()=>{});return reply(c,{embeds:[embed('🐉 BOSS SAVAŞI BAŞLADI',`**${b.name}** ortaya çıktı!\nCan: **${b.hp}/${b.maxHp}**\nSüre: 60 dakika\n\nKatılmak için \`/boss action:saldir\` kullan.`)]});}if(!b||b.hp<=0||b.endsAt<Date.now())return reply(c,'🐉 Şu anda aktif boss yok. Yeni bir boss başlatmak için `/boss action:başlat` kullan.');if(action==='durum'||action==='status')return reply(c,{embeds:[embed(`🐉 ${b.name}`,`Can: **${b.hp}/${b.maxHp}**\nBitiş: <t:${Math.floor(b.endsAt/1000)}:R>\nKatılımcı: **${Object.keys(b.participants||{}).length}**`)]});if(action!=='saldir'&&action!=='attack')return reply(c,'İşlem `durum`, `başlat` veya `saldır` olmalı.',true);const weapon=r.weapons.find((w:any)=>w.id===r.equippedWeapon),damage=Math.max(5,(weapon?.attack||8)+(weapon?.level||0)*3+Math.floor(Math.random()*12));b.participants??={};b.damage??={};b.participants[c.member.id]=true;b.damage[c.member.id]=(b.damage[c.member.id]||0)+damage;b.hp=Math.max(0,b.hp-damage);if(b.hp===0){const total=Object.values(b.damage).reduce((a:any,n:any)=>a+n,0)||1;for(const uid of Object.keys(b.damage)){const winner=user(c.guild.id,uid);winner.coins+=Math.max(100,Math.floor(1000*b.damage[uid]/total));const wr=rpgState(winner);addRpgItem(wr,'boss_ozu',1);if(Math.random()<0.05)wr.weapons.push(makeRpgWeapon('ejderha_kilici'));else if(Math.random()<0.12)wr.weapons.push(makeRpgWeapon('kristal_asa'));}mutate(()=>{});return reply(c,{embeds:[embed('🏆 BOSS YENİLDİ!',`**${b.name}** mağlup edildi!\nSon saldırı: <@${c.member.id}> • Hasar: **${damage}**\nKatkı sağlayan oyuncular ödül aldı: para ve Boss Özü; düşük ihtimalle destansı silah.`)]});}mutate(()=>{});return reply(c,{embeds:[embed('⚔️ Boss Saldırısı',`**${c.member.displayName}** ${b.name} düşmanına **${damage}** hasar verdi.\nKalan can: **${b.hp}/${b.maxHp}**\n\nBoss'u yenmek için diğer oyuncularla birlikte saldır!`)]});},()=>base('boss','Sunucu bossunu görüntüler, başlatır veya saldırır.').addStringOption(o=>o.setName('action').setDescription('İşlem').setRequired(true).addChoices({name:'Durum',value:'durum'},{name:'Boss başlat',value:'baslat'},{name:'Saldır',value:'saldir'})));
 
 function betResult(title:string,result:string){return {embeds:[economyEmbed(title,result)]};}
 function gameKey(gid:string,uid:string,name:string){return `${gid}:${uid}:${name}`;}
@@ -334,7 +604,7 @@ const permissionCatalog:Record<string,{label:string;command:string}[]>= {
  moderation:[['🗑️ Mesajları Temizleme','purge'],['⚠️ Uyarı Verme','warn'],['📋 Uyarıları Görme','warnings'],['↩️ Uyarı Geri Çekme','unwarn'],['🔇 Susturma','timeout'],['🔊 Susturmayı Kaldırma','untimeout'],['👢 Kullanıcı Atma','kick'],['🔨 Yasaklama','ban'],['🔓 Yasağı Kaldırma','unban'],['🔒 Kanal Kilitleme','lock'],['🔓 Kanal Kilidini Açma','unlock'],['🐢 Yavaş Mod Yönetimi','slowmode']].map(([label,command])=>({label,command})),
  management:[['🧩 Prefix Yönetimi','prefix'],['🚫 Sistem Hariç Tutma','ignore'],['📈 Seviye Hariç Tutma','level-ignore'],['🎭 Autorole Yönetimi','autorole'],['🎫 Ticket Yönetimi','ticket'],['📣 Bot Adına Mesaj','say'],['🔧 Özel Komut Yönetimi','custom'],['🎨 Reaction Role Yönetimi','rr'],['🎉 Çekiliş Yönetimi','giveaway'],['📚 Log Yönetimi','log'],['🪪 Bot Adı Yönetimi','nickname'],['🎨 Embed Gönderme','embed'],['👤 Rol Verme','rolver'],['🗑️ Rol Alma','rolal'],['🎙️ Özel Oda Yönetimi','tempvoice']].map(([label,command])=>({label,command})),
  stats:[['👤 Profil Görüntüleme','profil'],['📊 İstatistik Görüntüleme','stats'],['🏆 Sıralamaları Görme','leaderboard'],['📈 Seviye Sıralaması','seviye-top'],['💬 Mesaj Sıralaması','mesaj-top'],['🎙️ Ses Sıralaması','ses-top'],['🏆 Genel Liderlik','rank']].map(([label,command])=>({label,command})),
- economy:[['💰 Ekonomi Merkezi','ekonomi'],['💳 Bakiye','balance'],['🎁 Günlük Ödül','daily'],['📅 Haftalık Ödül','weekly'],['💼 Çalış','work'],['🧭 Meslek','meslek'],['🎒 Envanter','envanter'],['🏪 Market','market'],['🏦 Para Yatır','deposit'],['💵 Para Çek','withdraw'],['💸 Para Gönder','pay'],['🪙 Coinflip','coinflip'],['🎲 Zar Oyunu','dice'],['🎯 Bahissiz Zar','zar'],['🎰 Slot','slots'],['🃏 Blackjack','blackjack'],['🏆 Zenginler','zenginler'],['💎 Özel Para Ekle','paraekle']].map(([label,command])=>({label,command})),
+ economy:[['💰 Ekonomi Merkezi','ekonomi'],['💳 Bakiye','balance'],['🎁 Günlük Ödül','daily'],['🔥 Giriş Serisi','daily'],['🏦 Para Yatır','deposit'],['💵 Para Çek','withdraw'],['💸 Para Gönder','pay'],['🪙 Coinflip','coinflip'],['🎲 Zar Oyunu','dice'],['🎯 Bahissiz Zar','zar'],['🎰 Slot','slots'],['🃏 Blackjack','blackjack'],['🏆 Zenginler','zenginler'],['💎 Özel Para Ekle','paraekle']].map(([label,command])=>({label,command})),
  fun:[['📊 Anket','anket'],['💡 Öneri','öneri'],['⏰ Hatırlatıcı','remind'],['💤 AFK','afk'],['🎭 Eğlence','oda']].map(([label,command])=>({label,command}))
 };
 const permissionCategoryTitles:Record<string,string>={general:'🌐 Genel',moderation:'🛡️ Moderasyon',management:'⚙️ Yönetim',stats:'📊 İstatistik',economy:'💰 Ekonomi',fun:'🎉 Eğlence'};
@@ -541,11 +811,69 @@ function isRoomOwner(i:ButtonInteraction|UserSelectMenuInteraction|ModalSubmitIn
 client.on('interactionCreate',async i=>{try{if(i.isButton())return await button(i);if(i.isStringSelectMenu())return await select(i);if(i.isUserSelectMenu())return await roomUserSelect(i);if(i.isRoleSelectMenu())return await permissionRoleSelect(i);if(i.isModalSubmit())return await roomModal(i);if(!i.isChatInputCommand()||!i.guild)return;const cmd=commands.get(i.commandName);if(!cmd)return;if(!canUseCommand(i.member as GuildMember,cmd))return i.reply({content:'❌ Bu komut için gerekli yetkiye sahip değilsin.',flags:MessageFlags.Ephemeral});try{await cmd.execute({interaction:i,member:i.member as GuildMember,guild:i.guild,args:[]});await log(i.guild,'SLASH KOMUT',`${i.user.tag}: /${i.commandName}`,'command');}catch(e){console.error(e);if(i.replied||i.deferred)i.followUp({content:'❌ Komut çalışırken hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});else i.reply({content:'❌ Komut çalışırken hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});}}catch(error){console.error('interactionCreate hatası:',error);if('isRepliable' in i && i.isRepliable() && !i.replied && !i.deferred){await i.reply({content:'❌ İşlem sırasında beklenmeyen bir hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});}}});
 function getHelpDefs(m:GuildMember){
  const defs:[string,string,ButtonStyle, string][]=[['help:general','🌐 Genel',ButtonStyle.Primary,'general'],['help:moderation','🛡️ Moderasyon',ButtonStyle.Danger,'moderation'],['help:management','⚙️ Yönetim',ButtonStyle.Secondary,'management'],['help:stats','📊 Seviye & İstatistik',ButtonStyle.Success,'stats'],['help:economy','💰 Ekonomi',ButtonStyle.Success,'economy'],['help:fun','🎉 Eğlence',ButtonStyle.Primary,'fun']];
- const groups:Record<string,string[]>={general:['ping','help','sunucu','uye','avatar','join','play','queue','nowplaying','pause','resume','skip','stop','volume','loop','shuffle','remove','leave'],moderation:['purge','kick','ban','timeout','untimeout','warn','warnings','slowmode','lock','unlock'],management:['prefix','ignore','level-ignore','seviye-kanal','seviye-sifirla','autorole','rolver','rolal','role-info','channel-info','özel-kanal','tempvoice','custom','yetki','ticket','say','leave-message'],stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats'],economy:['ekonomi','balance','daily','weekly','work','meslek','envanter','market','silahlar','kusan','gelistir','parcala','savas','boss','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler','paraekle'],fun:['anket','öneri','remind','afk','oda']};
+ const groups:Record<string,string[]>={general:['ping','help','sunucu','uye','avatar','join','play','queue','nowplaying','pause','resume','skip','stop','volume','loop','shuffle','remove','leave'],moderation:['purge','kick','ban','timeout','untimeout','warn','warnings','slowmode','lock','unlock'],management:['prefix','ignore','level-ignore','seviye-kanal','seviye-sifirla','autorole','rolver','rolal','role-info','channel-info','özel-kanal','tempvoice','custom','yetki','ticket','say','leave-message'],stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats','uzmanlasma'],economy:['ekonomi','balance','daily','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler','paraekle'],fun:['anket','öneri','remind','afk','oda']};
  return defs.filter(([, , ,cat])=>groups[cat].some(n=>{const c=commands.get(n);return c&&visibleCommand(m,c);})).map(([id,label,style])=>[id,label,style] as [string,string,ButtonStyle]);
 }
 
 async function button(i:ButtonInteraction){if(!i.guild)return;
+ if(i.customId.startsWith('spec:cancel:')){
+  const sessionId=i.customId.split(':')[2];
+  const session=specializationSessions.get(sessionId);
+  if(!session||session.guildId!==i.guild.id||session.userId!==i.user.id)
+   return i.reply({content:'Bu uzmanlik oturumu gecersiz veya suresi dolmus.',flags:MessageFlags.Ephemeral});
+  specializationSessions.delete(sessionId);
+  return i.update({content:'Uzmanlik islemi iptal edildi.',embeds:[],components:[]});
+ }
+ if(i.customId.startsWith('spec:confirm:')){
+  const sessionId=i.customId.split(':')[2];
+  const session=specializationSessions.get(sessionId);
+  if(!session||session.guildId!==i.guild.id||session.userId!==i.user.id)
+   return i.reply({content:'Bu uzmanlik oturumu gecersiz veya suresi dolmus.',flags:MessageFlags.Ephemeral});
+  if(Date.now()-session.createdAt>120000){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik oturumunun suresi doldu. Komutu yeniden kullanabilirsin.',embeds:[],components:[]});
+  }
+  if(session.processing)
+   return i.reply({content:'Uzmanlik islemin zaten isleniyor.',flags:MessageFlags.Ephemeral});
+  if(!session.professionId||!session.specializationId)
+   return i.reply({content:'Once bir uzmanlik dali secmelisin.',flags:MessageFlags.Ephemeral});
+  session.processing=true;
+  const wallet=user(i.guild.id,i.user.id);
+  const profile=wallet.rpg||{};
+  const current=profile.mainSpecialization;
+  const count=profile.specializationChangeCount??0;
+  if((current?.professionId||null)!==session.expectedProfessionId||
+     (current?.specializationId||null)!==session.expectedSpecializationId||
+     count!==session.expectedCount){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik bilgilerin bu menu acildiktan sonra degismis. Lutfen komutu yeniden kullan.',embeds:[],components:[]});
+  }
+  const result=changeMainSpecialization(
+   wallet,
+   session.professionId,
+   session.specializationId,
+   persist
+  );
+  specializationSessions.delete(sessionId);
+  if(!result.ok){
+   const messages={
+    invalid_change_count:'Uzmanlik degisiklik sayaci gecersiz.',
+    invalid_balance:'Cuzdan bakiyesi gecersiz.',
+    insufficient_funds:'Bu uzmanlik degisikligi icin yeterli \u25C8 bakiyen yok.',
+    active_battle:'Savas sirasinda uzmanlik degistiremezsin.',
+    unknown_profession:'Meslek bulunamadi.',
+    unknown_specialization:'Uzmanlik dali bulunamadi.',
+    persistence_failed:'Kayit islemi basarisiz oldu. Bakiyen ve uzmanligin geri yuklendi.'
+   };
+   return i.update({content:messages[result.reason]||'Uzmanlik islemi tamamlanamadi.',embeds:[],components:[]});
+  }
+  const selected=RPG_PROFESSIONS.find(p=>p.id===session.professionId);
+  const branch=selected?.specializations.find(x=>x.id===session.specializationId);
+  const message=result.changed
+   ? 'Uzmanligin **'+(selected?.name||session.professionId)+' / '+(branch?.name||session.specializationId)+'** olarak ayarlandi.\nOdenen ucret: **'+result.charged.toLocaleString('tr-TR')+' \u25C8**'
+   : 'Bu uzmanlik zaten ana uzmanligin. Herhangi bir ucret alinmadi.';
+  return i.update({content:message,embeds:[],components:[]});
+ }
  if(i.customId.startsWith('levelreset:')){
   const [,action,guildId,adminId,sessionId]=i.customId.split(':');
   const session=levelResetSessions.get(sessionId);
@@ -626,8 +954,8 @@ if(i.customId.startsWith('help:') && i.customId!=='help:home'){
     general:['ping','help','sunucu','uye','avatar','join','play','queue','nowplaying','pause','resume','skip','stop','volume','loop','shuffle','remove','leave'],
     moderation:['purge','kick','ban','timeout','untimeout','warn','warnings','slowmode','lock','unlock'],
     management:['prefix','ignore','level-ignore','seviye-kanal','seviye-sifirla','autorole','rolver','rolal','role-info','channel-info','özel-kanal','tempvoice','custom','yetki','ticket','say','leave-message'],
-    stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats'],
-    economy:['ekonomi','balance','daily','weekly','work','meslek','envanter','market','pazar','uretim','silahlar','kusan','gelistir','parcala','savas','boss','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler'],
+    stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats','uzmanlasma'],
+    economy:['ekonomi','balance','daily','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler'],
     fun:['anket','öneri','remind','afk','oda']
    };
    const titles:Record<string,string>={general:'🌐 Genel Komutlar',moderation:'🛡️ Moderasyon Komutları',management:'⚙️ Yönetim & Yapılandırma',stats:'📊 Seviye & İstatistik',economy:'💰 Ekonomi',fun:'🎉 Eğlence & Topluluk'};
@@ -645,6 +973,86 @@ if(i.customId.startsWith('help:') && i.customId!=='help:home'){
  if(i.customId.startsWith('rr:')){const rid=i.customId.split(':')[1],m=i.member as GuildMember;const r=i.guild.roles.cache.get(rid);if(!r)return i.reply({content:'❌ Rol artık yok.',flags:MessageFlags.Ephemeral});if(m.roles.cache.has(rid)){await m.roles.remove(r);return i.reply({content:`➖ ${r} rolü alındı.`,flags:MessageFlags.Ephemeral});}await m.roles.add(r);return i.reply({content:`➕ ${r} rolü verildi.`,flags:MessageFlags.Ephemeral});}if(i.customId.startsWith('ticket:create:')){const cfg=guild(i.guild.id).config.ticket||{};if(!cfg.category)return i.reply({content:'❌ Ticket sistemi henüz kurulmamış.',flags:MessageFlags.Ephemeral});const type=i.customId.endsWith('complaint')?'complaint':'support';const existing=i.guild.channels.cache.find(x=>x.type===ChannelType.GuildText&&((x as TextChannel).topic?.startsWith(`NEXUS-TICKET|${i.user.id}|`)||x.name===`ticket-${i.user.id}`));if(existing)return i.reply({content:`❌ Zaten açık ticketın var: ${existing}`,flags:MessageFlags.Ephemeral});const roleId=type==='complaint'?cfg.complaintRole:cfg.supportRole;const categoryId=type==='complaint'?(cfg.complaintCategory||cfg.category):(cfg.supportCategory||cfg.category);const ch=await i.guild.channels.create({name:`${i.user.username.toLowerCase().replace(/[^a-z0-9çğıöşü-]/gi,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,45)||'kullanici'}-${type==='complaint'?'şikayet':'destek'}-${new Date().toLocaleDateString('tr-TR',{day:'2-digit',month:'2-digit',year:'numeric'}).replace(/\./g,'')}`.slice(0,95),topic:`NEXUS-TICKET|${i.user.id}|${type}`,type:ChannelType.GuildText,parent:categoryId,permissionOverwrites:[{id:i.guild.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},{id:i.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory]},{id:i.guild.members.me!.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels]}]});if(roleId)await ch.permissionOverwrites.create(roleId,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true});const close=new ButtonBuilder().setCustomId('ticket:close').setLabel('🔒 Talebi Kapat').setStyle(ButtonStyle.Danger);const claim=new ButtonBuilder().setCustomId('ticket:claim').setLabel('📌 Üstlen').setStyle(ButtonStyle.Secondary);await ch.send({content:`${i.user}${roleId?` <@&${roleId}>`:''}`,allowedMentions:{users:[i.user.id],roles:roleId?[roleId]:[]},embeds:[new EmbedBuilder().setColor(type==='complaint'?0xed4245:0x5865f2).setAuthor({name:'⚔️ NEXUS • TICKET'}).setTitle(type==='complaint'?'⚠️ Şikayet / Bildirim':'🎫 Destek Talebi').setThumbnail(i.guild.iconURL({size:256})||null).setDescription(`Talebin oluşturuldu.\n\n**Açan:** ${i.user}\n**Yetkili ekip:** ${roleId?`<@&${roleId}>`:'Tanımlanmadı'}\n\nBir yetkili en kısa sürede ilgilenecektir.`).setFooter({text:'NEXUS Ticket Sistemi'}).setTimestamp()],components:[new ActionRowBuilder<ButtonBuilder>().addComponents(claim,close)]});return i.reply({embeds:[embed('🎫 Ticket Açıldı',`Talebin oluşturuldu: ${ch}`)],flags:MessageFlags.Ephemeral});}if(i.customId==='ticket:claim'){const cfg=guild(i.guild.id).config.ticket||{};const member=i.member as GuildMember;const ch=i.channel as TextChannel;const isStaffMember=isStaff(member);const topic=ch.topic||'';const type=topic.split('|')[2]||'support';const requiredRole=type==='complaint'?cfg.complaintRole:cfg.supportRole;if(!isStaffMember&&(!requiredRole||!member.roles.cache.has(requiredRole)))return i.reply({content:'❌ Bu işlemi yalnızca ilgili ticket yetkilileri yapabilir.',flags:MessageFlags.Ephemeral});const current=ticketClaims.get(ch.id);if(current&&current!==i.user.id)return i.reply({content:`❌ Bu ticket zaten <@${current}> tarafından üstlenildi.`,flags:MessageFlags.Ephemeral});ticketClaims.set(ch.id,i.user.id);const release=new ButtonBuilder().setCustomId('ticket:release').setLabel('↩️ Üstlenmeyi Bırak').setStyle(ButtonStyle.Secondary);const close=new ButtonBuilder().setCustomId('ticket:close').setLabel('🔒 Talebi Kapat').setStyle(ButtonStyle.Danger);if(requiredRole)await ch.permissionOverwrites.edit(requiredRole,{SendMessages:false}).catch(()=>{});await ch.permissionOverwrites.edit(i.user.id,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true}).catch(()=>{});await i.message.edit({components:[new ActionRowBuilder<ButtonBuilder>().addComponents(release,close)]}).catch(()=>{});return i.reply({embeds:[embed('📌 Ticket Üstlenildi',`${i.user} bu ticketı üstlendi.\n\nArtık yalnızca ticketı üstlenen yetkili ve ticket sahibi mesaj yazabilir.`)],flags:MessageFlags.Ephemeral});}if(i.customId==='ticket:release'){const cfg=guild(i.guild.id).config.ticket||{};const ch=i.channel as TextChannel;const claimer=ticketClaims.get(ch.id);if(!claimer)return i.reply({content:'❌ Bu ticket şu anda üstlenilmiş değil.',flags:MessageFlags.Ephemeral});if(claimer!==i.user.id)return i.reply({content:'❌ Ticketı yalnızca üstlenen yetkili bırakabilir.',flags:MessageFlags.Ephemeral});const topic=ch.topic||'';const type=topic.split('|')[2]||'support';const requiredRole=type==='complaint'?cfg.complaintRole:cfg.supportRole;ticketClaims.delete(ch.id);if(requiredRole)await ch.permissionOverwrites.edit(requiredRole,{SendMessages:true,ViewChannel:true,ReadMessageHistory:true}).catch(()=>{});await ch.permissionOverwrites.delete(i.user.id).catch(()=>{});const claim=new ButtonBuilder().setCustomId('ticket:claim').setLabel('📌 Üstlen').setStyle(ButtonStyle.Secondary);const close=new ButtonBuilder().setCustomId('ticket:close').setLabel('🔒 Talebi Kapat').setStyle(ButtonStyle.Danger);await i.message.edit({components:[new ActionRowBuilder<ButtonBuilder>().addComponents(claim,close)]}).catch(()=>{});return i.reply({content:'↩️ Ticket yeniden ilgili yetkililerin kullanımına açıldı.',flags:MessageFlags.Ephemeral});}if(i.customId==='ticket:close'){const cfg=guild(i.guild.id).config.ticket||{};const member=i.member as GuildMember;const ch=i.channel as TextChannel;const canClose=isStaff(member)||(cfg.supportRole&&member.roles.cache.has(cfg.supportRole))||(cfg.complaintRole&&member.roles.cache.has(cfg.complaintRole))||ch.permissionOverwrites.cache.get(i.user.id)?.allow.has(PermissionFlagsBits.ViewChannel);if(!canClose)return i.reply({content:'❌ Bu ticketı kapatma yetkin yok.',flags:MessageFlags.Ephemeral});await i.reply({content:'İşlem tamamlanıyor…',flags:MessageFlags.Ephemeral});ticketClaims.delete(ch.id);setTimeout(async()=>{if(ch?.isTextBased()){const msgs=await ch.messages.fetch({limit:100}).catch(()=>new Collection<string,Message>());const ordered=[...msgs.values()].reverse();const transcript=ordered.map(m=>`[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content||'[embed/ek dosya]'}`).join('\n');const attachment=new AttachmentBuilder(Buffer.from(transcript||'Ticket içeriği boş.','utf8'),{name:`${ch.name}-transcript.txt`});const logId=guild(i.guild.id).config.logChannels.ticket;const logCh=logId?i.guild.channels.cache.get(logId):undefined;if(logCh?.isTextBased())await (logCh as TextChannel).send({embeds:[new EmbedBuilder().setColor(0x2b2d31).setAuthor({name:'⚔️ NEXUS • Ticket Arşivi',iconURL:i.guild.iconURL({size:128})||undefined}).setTitle(`🎫 ${ch.name} • Arşiv`).setDescription(`**Kapatma işlemini yapan:** ${i.user}\n**Mesaj sayısı:** ${ordered.length}\n**Kapanış:** <t:${Math.floor(Date.now()/1000)}:F>`).setThumbnail(i.guild.iconURL({size:256})||null).setTimestamp()],files:[attachment]}).catch(()=>{});}await ch?.delete().catch(()=>{});},700);}if(i.customId.startsWith('poll:'))return i.reply({content:`✅ Oyunuzu **${i.customId.endsWith('yes')?'Evet':'Hayır'}** olarak kaydettim.`,flags:MessageFlags.Ephemeral});}
 async function select(i:StringSelectMenuInteraction){
  if(!i.guild)return;
+ if(i.customId.startsWith('spec:profession:')){
+  const sessionId=i.customId.split(':')[2];
+  const session=specializationSessions.get(sessionId);
+  if(!session||session.guildId!==i.guild.id||session.userId!==i.user.id)
+   return i.reply({content:'Bu uzmanlik oturumu gecersiz veya suresi dolmus.',flags:MessageFlags.Ephemeral});
+  if(Date.now()-session.createdAt>120000){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik oturumunun suresi doldu. Komutu yeniden kullanabilirsin.',embeds:[],components:[]});
+  }
+  const profession=RPG_PROFESSIONS.find(p=>p.id===i.values[0]);
+  if(!profession)
+   return i.reply({content:'Secilen meslek bulunamadi.',flags:MessageFlags.Ephemeral});
+  session.professionId=profession.id;
+  const menu=new StringSelectMenuBuilder()
+   .setCustomId('spec:branch:'+sessionId)
+   .setPlaceholder('Bir uzmanlik dali sec')
+   .addOptions(profession.specializations.map(branch=>({
+    label:branch.name.slice(0,100),
+    value:branch.id,
+    description:branch.description.slice(0,100)
+   })));
+  return i.update({
+   embeds:[new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('NEXUS | '+profession.name)
+    .setDescription(profession.description+'\n\nUzmanlik dallarindan birini sec.')],
+   components:[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)]
+  });
+ }
+ if(i.customId.startsWith('spec:branch:')){
+  const sessionId=i.customId.split(':')[2];
+  const session=specializationSessions.get(sessionId);
+  if(!session||session.guildId!==i.guild.id||session.userId!==i.user.id)
+   return i.reply({content:'Bu uzmanlik oturumu gecersiz veya suresi dolmus.',flags:MessageFlags.Ephemeral});
+  if(Date.now()-session.createdAt>120000){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik oturumunun suresi doldu. Komutu yeniden kullanabilirsin.',embeds:[],components:[]});
+  }
+  const profession=RPG_PROFESSIONS.find(p=>p.id===session.professionId);
+  const branch=profession?.specializations.find(x=>x.id===i.values[0]);
+  if(!profession||!branch)
+   return i.reply({content:'Uzmanlik dali bulunamadi.',flags:MessageFlags.Ephemeral});
+  const wallet=user(i.guild.id,i.user.id);
+  const profile=wallet.rpg||{};
+  const current=profile.mainSpecialization;
+  const count=profile.specializationChangeCount??0;
+  if((current?.professionId||null)!==session.expectedProfessionId||
+     (current?.specializationId||null)!==session.expectedSpecializationId||
+     count!==session.expectedCount){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik bilgilerin menu acildiktan sonra degismis. Lutfen komutu yeniden kullan.',embeds:[],components:[]});
+  }
+  const same=current?.professionId===profession.id&&current?.specializationId===branch.id;
+  const fee=same||!current?0:getSpecializationChangeFee(count);
+  if(fee===null){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Uzmanlik degisiklik sayaci gecersiz.',embeds:[],components:[]});
+  }
+  if(wallet.coins<fee){
+   specializationSessions.delete(sessionId);
+   return i.update({content:'Bu degisiklik icin yeterli \u25C8 bakiyen yok. Gereken: **'+fee.toLocaleString('tr-TR')+' \u25C8**',embeds:[],components:[]});
+  }
+  session.specializationId=branch.id;
+  const buttons=new ActionRowBuilder<ButtonBuilder>().addComponents(
+   new ButtonBuilder().setCustomId('spec:confirm:'+sessionId).setLabel('Onayla').setStyle(ButtonStyle.Success),
+   new ButtonBuilder().setCustomId('spec:cancel:'+sessionId).setLabel('Vazgec').setStyle(ButtonStyle.Secondary)
+  );
+  const feeText=same
+   ? 'Bu dal zaten ana uzmanligin. Degisiklik yapilmayacak ve ucret alinmayacak.'
+   : !current
+    ? 'Ilk uzmanlik secimin ucretsizdir.'
+    : 'Degisiklik ucreti: **'+fee.toLocaleString('tr-TR')+' ?**';
+  return i.update({
+   embeds:[new EmbedBuilder()
+    .setColor(0xF1C40F)
+    .setTitle('Uzmanlik Secimini Onayla')
+    .setDescription('**Meslek:** '+profession.name+'\n**Uzmanlik:** '+branch.name+'\n\n'+branch.description+'\n\n'+feeText+'\n\nDevam etmek istiyor musun?')],
+   components:[buttons]
+  });
+ }
  if(i.customId.startsWith('permcat:')){const adminId=i.customId.split(':')[1];if(adminId!==i.user.id)return i.reply({content:'❌ Bu menü yalnızca onu açan yönetici tarafından kullanılabilir.',flags:MessageFlags.Ephemeral});const s=permissionSessions.get(i.user.id);if(!s)return i.reply({content:'❌ Yetki oturumu bulunamadı.',flags:MessageFlags.Ephemeral});const cat=i.values[0];s.category=cat;const target=s.targetType==='user'?`<@${s.targetId}>`:`<@&${s.targetId}>`;const e=new EmbedBuilder().setColor(0x5865f2).setTitle('🛡️ NEXUS • Yetki İşlemi').setDescription(`**Hedef:** ${target}\n**Kategori:** ${permissionCategoryTitles[cat]}\n\nİşlemi seç.`);return i.update({content:'',embeds:[e],components:[new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`perm:action:add:${i.user.id}`).setLabel('➕ Yetki Ver').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId(`perm:action:remove:${i.user.id}`).setLabel('➖ Yetki Al').setStyle(ButtonStyle.Danger),new ButtonBuilder().setCustomId(`perm:back:target:${i.user.id}`).setLabel('↩️ Geri').setStyle(ButtonStyle.Secondary)),permissionOverviewButtons(i.user.id)]});}
  if(i.customId.startsWith('permselect:')){const adminId=i.customId.split(':')[1];if(adminId!==i.user.id)return i.reply({content:'❌ Bu menü yalnızca onu açan yönetici tarafından kullanılabilir.',flags:MessageFlags.Ephemeral});const s=permissionSessions.get(i.user.id);if(!s?.action||!s.category)return i.reply({content:'❌ Yetki oturumu bulunamadı.',flags:MessageFlags.Ephemeral});if(s.action==='view'){const cfg=guild(i.guild.id).config;const targetMap=s.targetType==='user'?cfg.commandUsers:cfg.commandRoles;const sections=Object.entries(permissionCatalog).map(([cat,items])=>{const granted=items.filter(x=>(targetMap[x.command]||[]).includes(s.targetId));return granted.length?`**${permissionCategoryTitles[cat]}**\n${granted.map(x=>`• ${x.label}`).join('\n')}`:''}).filter(Boolean).join('\n\n');return i.update({embeds:[new EmbedBuilder().setColor(0x5865f2).setTitle('📋 NEXUS • Mevcut Yetkiler').setDescription(`**Hedef:** ${s.targetType==='user'?`<@${s.targetId}>`:`<@&${s.targetId}>`}\n\n${sections||'Bu hedefe atanmış özel NEXUS yetkisi bulunmuyor.'}`)],components:[new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`perm:back:category:${i.user.id}`).setLabel('↩️ Kategoriye Dön').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId(`perm:done:${i.user.id}`).setLabel('✅ Tamamla').setStyle(ButtonStyle.Secondary))]});}const cfg=guild(i.guild.id).config;const map=s.targetType==='user'?cfg.commandUsers:cfg.commandRoles;const targets=s.targetIds?.length?s.targetIds:[s.targetId];const commandsSelected=i.values;for(const command of commandsSelected){map[command]??=[];const arr=map[command]!;if(s.action==='add'){for(const target of targets)if(!arr.includes(target))arr.push(target);}else{for(const target of targets){const idx=arr.indexOf(target);if(idx>=0)arr.splice(idx,1);}if(!arr.length)delete map[command];}}mutate(()=>{});const labels=commandsSelected.map(command=>(permissionCatalog[s.category]||[]).find(x=>x.command===command)?.label||command);return i.update({embeds:[new EmbedBuilder().setColor(s.action==='add'?0x57f287:0xed4245).setTitle(s.action==='add'?'🛡️ Özel Yetkiler Verildi':'🗑️ Özel Yetkiler Kaldırıldı').setDescription(`**Hedefler:** ${permissionTargetLabel(s)}\n**İşlem:** ${s.action==='add'?'Yetki verildi':'Yetki kaldırıldı'}\n\n${labels.map(x=>`• ${x}`).join('\n')}`)],components:[new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`perm:back:category:${i.user.id}`).setLabel('↩️ Başka İşlem Yap').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId(`perm:done:${i.user.id}`).setLabel('✅ Tamamla').setStyle(ButtonStyle.Success))]});}
 
@@ -673,7 +1081,9 @@ async function roomModal(i:ModalSubmitInteraction){
 }
 
 function normalizeCommandJSON(command:any){if(Array.isArray(command.options)){command.options.sort((a:any,b:any)=>Number(!!b.required)-Number(!!a.required));}return command;}
-async function registerCommands(){const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN!);const builders=[...new Map([...commands.values()].map(c=>[c.name,normalizeCommandJSON(c.builder?.().toJSON())])).values()];const invalid=builders.filter((b:any)=>Array.isArray(b?.options)&&b.options.some((o:any,i:number)=>o.required===true&&b.options.slice(0,i).some((p:any)=>p.required!==true)));if(invalid.length)console.warn('Komut seçenek sırası düzeltildi:',invalid.map((b:any)=>b.name).join(', '));try{if(process.env.GUILD_ID)await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID!,process.env.GUILD_ID),{body:builders});else await rest.put(Routes.applicationCommands(process.env.CLIENT_ID!),{body:builders});console.log(`${builders.length} slash komut kaydedildi.`);}catch(e){console.error('Komut kayıt hatası:',e);}}
+const PREFIX_ONLY_COMMANDS=new Set(['serverstats','leaderboard','zar','welcome','leave-message','nickname','rr','embed','role-info','channel-info','oda','custom','unban','unwarn','warnings','nowplaying','volume','loop','shuffle','remove','join','leave','avatar','say','rank']);
+for(const name of PREFIX_ONLY_COMMANDS){const command=commands.get(name);if(command)command.builder=undefined;}
+async function registerCommands(){const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN!);const builders=[...new Map([...commands.values()].filter(c=>typeof c.builder==='function').map(c=>[c.name,normalizeCommandJSON(c.builder!().toJSON())])).values()];if(builders.length>100)throw new Error(`Discord slash komut sınırı aşıldı: ${builders.length}/100`);const invalid=builders.filter((b:any)=>Array.isArray(b?.options)&&b.options.some((o:any,i:number)=>o.required===true&&b.options.slice(0,i).some((p:any)=>p.required!==true)));if(invalid.length)console.warn('Komut seçenek sırası düzeltildi:',invalid.map((b:any)=>b.name).join(', '));try{if(process.env.GUILD_ID)await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID!,process.env.GUILD_ID),{body:builders});else await rest.put(Routes.applicationCommands(process.env.CLIENT_ID!),{body:builders});console.log(`${builders.length} slash komut kaydedildi.`);}catch(e){console.error('Komut kayıt hatası:',e);}}
 
 setInterval(async()=>{const now=Date.now();for(const g of client.guilds.cache.values()){const data=guild(g.id);for(const r of [...data.reminders])if(r.at<=now){const ch=g.channels.cache.get(r.channel);if(ch?.isTextBased())await (ch as TextChannel).send(`<@${r.user}> ⏰ Hatırlatma: **${r.text}**`).catch(()=>{});data.reminders.splice(data.reminders.indexOf(r),1);}for(const gw of [...data.giveaways])if(gw.end<=now){const ch=g.channels.cache.get(gw.channel);const msg=ch?.isTextBased()?await (ch as TextChannel).messages.fetch(gw.message).catch(()=>null):null;const reacts=msg?.reactions.cache.get('🎉');const users=reacts?await reacts.users.fetch():new Collection<string,User>();const pool=users.filter(u=>!u.bot).map(u=>u.id);const winners=pool.sort(()=>Math.random()-.5).slice(0,gw.winners);if(msg?.channel.isTextBased())await msg.channel.send(`🎉 Çekiliş bitti! **${gw.prize}** kazananlar: ${winners.map(x=>`<@${x}>`).join(', ')||'Katılım yok.'}`);data.giveaways.splice(data.giveaways.indexOf(gw),1);}mutate(()=>{});} },2000);
 
