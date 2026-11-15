@@ -16,7 +16,7 @@ export type GuildData={config:GuildConfig; users:Record<string,UserData>; cases:
 const dir=path.resolve(process.env.DATA_DIR||'./data');
 if(!fs.existsSync(dir))fs.mkdirSync(dir,{recursive:true});
 const file=path.join(dir,'database.json');
-const defaults=():GuildData=>({config:{prefix:process.env.PREFIX||'!',commandRoles:{},commandUsers:{},logChannels:{},ignoredChannels:[],ignoredRoles:[],levelIgnoredChannels:[],levelIgnoredRoles:[],customCommands:{},features:{ai:false,music:true},economyName:'Nexus Ekonomisi',currency:'◈',xpMin:2,xpMax:4,cooldown:45000},users:{},cases:[],reactionRoles:[],giveaways:[],reminders:[],customCommands:{},stats:{},rpgSchemaVersion:1});
+const defaults=():GuildData=>({config:{prefix:process.env.PREFIX||'!',commandRoles:{},commandUsers:{},logChannels:{},ignoredChannels:[],ignoredRoles:[],levelIgnoredChannels:[],levelIgnoredRoles:[],customCommands:{},features:{ai:false,music:true},economyName:'Nexus Ekonomisi',currency:'◈',xpMin:2,xpMax:4,cooldown:45000},users:{},cases:[],reactionRoles:[],giveaways:[],reminders:[],customCommands:{},stats:{},rpgSchemaVersion:2});
 let db:Record<string,GuildData>={};
 if(!fs.existsSync(file) && process.env.REQUIRE_EXISTING_DATABASE==='true'){throw new Error(`KORUMA: ${file} bulunamadı. Boş veritabanıyla devam edilmiyor; canlı veritabanı kalıcı depolamaya bağlanmalı.`);}
 if(fs.existsSync(file)){
@@ -40,13 +40,18 @@ function migrateGuild(g:GuildData){
   g.config.commandRoles??={}; g.config.commandUsers??={}; g.config.logChannels??={};
   g.config.ignoredChannels??=[]; g.config.ignoredRoles??=[]; g.config.levelIgnoredChannels??=[]; g.config.levelIgnoredRoles??=[]; g.config.customCommands??={};
   g.users??={}; g.cases??=[]; g.reactionRoles??=[]; g.giveaways??=[]; g.reminders??=[]; g.customCommands??={}; g.stats??={};
-  // One-time reset for the new RPG schema. Economy and Discord data stay untouched.
-  if((g.rpgSchemaVersion??0)<1){
+  // One-time season reset: clear RPG, inventory and betting balances.
+  // Discord progression, moderation records and guild settings remain untouched.
+  if((g.rpgSchemaVersion??0)<2){
     for(const u of Object.values(g.users)){
       delete u.rpg;
+      u.inventory=[];
+      u.coins=100;
+      u.bank=0;
+      delete u.activeBet;
     }
     delete g.rpg;
-    g.rpgSchemaVersion=1;
+    g.rpgSchemaVersion=2;
   }
 
   for(const u of Object.values(g.users)){

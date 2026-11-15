@@ -17,7 +17,7 @@ export function setActivePet(profile:RpgProfileData,petId:string):PetResult {
  profile.activePetId=pet.id;pet.status='active';for(const other of profile.pets||[])if(other.id!==pet.id&&other.status==='active')other.status='resting';return {ok:true,pet};
 }
 export function feedPet(profile:RpgProfileData,petId:string,foodItemId:string):PetResult {
- const pet=profile.pets?.find(item=>item.id===petId);const species=pet&&getPetSpecies(pet.speciesId);if(!pet||!species)return {ok:false,reason:'pet_not_found'};
+ const pet=profile.pets?.find(item=>item.id===petId);const species=pet&&(getPetSpecies(pet.speciesId)||(pet.speciesId==='ember_salamander'?{baseStats:{health:180},preferredFood:['pet_et']}:undefined));if(!pet||!species)return {ok:false,reason:'pet_not_found'};
  if(pet.hunger>=100)return {ok:false,reason:'not_hungry'};
  const food=getRpgItem(foodItemId);if(!food||(food.category!=='pet_food'&&food.category!=='food'&&!species.preferredFood.includes(foodItemId)))return {ok:false,reason:'invalid_food'};
  const removed=removeItem(profile,foodItemId,1);if(!removed.ok)return {ok:false,reason:'food_missing'};
@@ -41,3 +41,12 @@ export function claimPetExpedition(profile:RpgProfileData,expeditionId:string,no
  expedition.status='claimed';pet.status=pet.id===profile.activePetId?'active':'resting';pet.xp+=20+region.dangerLevel*5;while(pet.level<100&&pet.xp>=100+pet.level*60){pet.xp-=100+pet.level*60;pet.level++;pet.health+=10;}pet.bond=Math.min(100,pet.bond+3);pet.energy=Math.min(100,pet.energy+10);return {ok:true,pet,rewards};
 }
 export function listPetSpecies(){return RPG_PET_SPECIES;}
+
+/** Owner-only special companion; deliberately excluded from the normal pet catalogue. */
+export function grantExclusivePet(profile:RpgProfileData,targetId:string,name?:string,now=Date.now()):PetResult {
+ const pets=profile.pets||[];
+ if(pets.some(p=>p.speciesId==='ember_salamander'))return {ok:false,reason:'already_granted'};
+ if(pets.length>=5)return {ok:false,reason:'pet_limit'};
+ const pet:RpgPet={id:'exclusive-ember-'+targetId+'-'+now.toString(36),speciesId:'ember_salamander',name:(name||'Kor Semenderi').trim().slice(0,24)||'Kor Semenderi',rarity:'mythic',level:1,xp:0,bond:25,hunger:100,health:180,morale:100,energy:100,skills:[],equipment:{},status:profile.activePetId?'resting':'active',bound:true,acquiredAt:now,origin:'exclusive_owner_grant',visual:{image:'companion_ember_salamander_001.png',icon:'🦎'}};
+ profile.pets=pets.concat(pet);if(!profile.activePetId)profile.activePetId=pet.id;return {ok:true,pet};
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 — NEXUS bütünleşik RPG ve görsel paketi
+- 385 RPG görseli ve doğrulama envanteri teslim paketine eklendi; özgün PNG alfa kanalları korunur.
+- Süresi dolan veya kaybolan rakip nedeniyle temizlenen savaş durumlarının kalıcı veritabanına yazılması düzeltildi.
+- Kor Semenderi yalnızca bot sahibinin /kor-semender-ver komutuyla dağıtabileceği, hesaba bağlı mitik yoldaş olarak eklendi; normal pet kataloğuna ve edinme yollarına eklenmedi.
+- Kor Semenderi için besleme uyumluluğu sağlandı.
+- Derleme ve otomatik testler paketlemenin zorunlu adımı yapıldı.
+
 ## 1.1.0 — NEXUS RPG dünya ve ilerleme sürümü
 - RPG karakter profili, 11 meslek ve 33 uzmanlaşma dalı için ilerleme servisleri tamamlandı.
 - Uzmanlaşma XP'si ve dal seviyeleri eklendi; yalnızca global ana dal 3/3 seviyesine ilerleyebilir.

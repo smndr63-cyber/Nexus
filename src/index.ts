@@ -35,7 +35,7 @@ import { getProfessionBossTier, getProfessionBoss } from './rpg/data/bosses';
 import { getActiveInjuries, treatInjury } from './rpg/injury-service';
 import { RPG_WORLD_BOSSES } from './rpg/data/bosses';
 import { RPG_RECIPES } from './rpg/data/recipes';
-import { adoptPet, setActivePet, startPetExpedition, claimPetExpedition, feedPet, listPetSpecies } from './rpg/pet-service';
+import { adoptPet, setActivePet, startPetExpedition, claimPetExpedition, feedPet, listPetSpecies, grantExclusivePet } from './rpg/pet-service';
 import {ignored,isStaff,formatDuration,parseDuration,clean} from './lib/utils';
 import {askAI} from './lib/ai';
 import {playTrack,queue as musicQueue,current as musicCurrent,skip,stop,pause,resume,setVolume as musicVolume,setLoop as musicLoop,shuffle as musicShuffle,remove as musicRemove,initMusic} from './lib/music';
@@ -183,7 +183,7 @@ simple('avla','Bulunduğun bölgedeki bir yaratıkla savaş başlatır.',async c
 simple('savas-hamle','Devam eden savaşta hamle yapar.',async c=>{
  const action=str(c,'hamle') as 'attack'|'defend'|'flee';if(!['attack','defend','flee'].includes(action))return reply(c,'Hamle geçersiz.',true);
  const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);const result=combatTurn(profile,c.member.id,action);
- if(!result.ok)return reply(c,({battle_not_found:'Aktif savaşın bulunmuyor.',battle_expired:'Savaş süresi doldu.',opponent_missing:'Rakip artık mevcut değil.',profession_boss_requires_command:'Meslek bossu için /meslek-boss-hamle komutunu kullan.'} as any)[result.reason]||'Hamle gerçekleştirilemedi.',true);
+ if(!result.ok){if(result.reason==='battle_expired'||result.reason==='opponent_missing'){wallet.rpg=profile;persist();}return reply(c,({battle_not_found:'Aktif savaşın bulunmuyor.',battle_expired:'Savaş süresi doldu.',opponent_missing:'Rakip artık mevcut değil.',profession_boss_requires_command:'Meslek bossu için /meslek-boss-hamle komutunu kullan.'} as any)[result.reason]||'Hamle gerçekleştirilemedi.',true);}
  wallet.rpg=profile;if(result.state==='won'&&result.rewards){wallet.coins+=result.rewards.coins;for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'defeat',result.battle.opponentId,1);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)wallet.coins+=qr.rewards.coins;}persist();
  const status=result.state==='won'?`🏆 Zafer! **${result.rewards?.xp||0} XP** ve **${result.rewards?.coins||0} ◈** kazandın.\n${result.rewards?.drops.map(d=>`${d.itemId} ×${d.quantity}`).join(', ')||'Ek ganimet yok.'}`:result.state==='lost'?'💀 Yenildin.':action==='flee'?'🏃 Savaştan kaçtın.':`Verdiğin hasar: **${result.damage}**\nRakip canı: **${result.battle.opponentHealth}/${result.battle.maxOpponentHealth}**\nSenin canın: **${result.battle.playerHealth}/${result.battle.maxPlayerHealth}**${result.enemyAbility?`\nRakip yeteneği: **${result.enemyAbility}**`:''}${result.battle.statuses.length?`\nDurum etkileri: ${result.battle.statuses.map(x=>x.id).join(', ')}`:''}`;
  return reply(c,{embeds:[new EmbedBuilder().setColor(result.state==='won'?0x2ecc71:result.state==='lost'?0x7f8c8d:0xe67e22).setTitle('⚔️ '+result.battle.opponentName).setDescription(status)]});
@@ -256,6 +256,13 @@ simple('uret','Öğrendiğin tarifle eşya üretir.',async c=>{
  for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'craft',result.outputItemId,quantity);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;if(result.quality>=80){const master=advanceQuest(profile,questId,'craft','masterwork',1);if(master.ok&&master.completed&&master.rewards)wallet.coins+=master.rewards.coins;}}for(const qr of syncQuestMilestones(profile))if(qr.ok&&qr.rewards)wallet.coins+=qr.rewards.coins;wallet.rpg=profile;persist();return reply(c,`🔨 **${getRpgItem(result.outputItemId)?.name||result.outputItemId} ×${result.quantity}** üretildi. Kalite: **${result.quality}/100** • Meslek XP: **+${result.xpGained}**`);
 },()=>base('uret','Öğrendiğin tarifle eşya üretir.').addStringOption(o=>o.setName('tarif').setDescription('Tarif kimliği').setRequired(true)).addIntegerOption(o=>o.setName('adet').setDescription('Üretim adedi').setMinValue(1).setMaxValue(20)));
 // PET COMPANIONS
+simple('kor-semender-ver','Yalnızca bot sahibinin özel Kor Semenderi dağıtmasını sağlar.',async c=>{
+ if(!ownerIds.has(c.member.id))return reply(c,'Bu komut yalnızca bot sahibine açıktır.',true);
+ const target=userOpt(c,'hedef');if(!target)return reply(c,'Geçerli bir kullanıcı seçmelisin.',true);
+ const wallet=user(c.guild.id,target.id);const profile=ensureRpgProfile(wallet.rpg);const result=grantExclusivePet(profile,target.id,str(c,'isim')||undefined);
+ if(!result.ok)return reply(c,result.reason==='already_granted'?'Bu oyuncuda zaten özel Kor Semenderi bulunuyor.':result.reason==='pet_limit'?'Oyuncunun yoldaş yuvaları dolu. Önce bir yuva açılmalı.':'Özel yoldaş verilemedi.',true);
+ wallet.rpg=profile;persist();return reply(c,'🔥 **'+result.pet.name+'**, **'+target.username+'** oyuncusuna özel olarak verildi. Bu yoldaş normal yollarla edinilemez ve hesabına bağlıdır.');
+},()=>base('kor-semender-ver','Yalnızca bot sahibinin özel Kor Semenderi dağıtmasını sağlar.').addUserOption(o=>o.setName('hedef').setDescription('Yoldaşın verileceği oyuncu').setRequired(true)).addStringOption(o=>o.setName('isim').setDescription('Yoldaşın özel adı').setMaxLength(24)));
 simple('petler','Petlerini, durumlarını ve tür kataloğunu gösterir.',async c=>{
  const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
  const lines=(profile.pets||[]).map(p=>`**${p.name}** (${p.speciesId}) • Seviye ${p.level} • Can ${p.health} • Enerji ${p.energy} • Açlık ${p.hunger} • ${p.status} • \`${p.id}\``);
@@ -1081,7 +1088,7 @@ async function roomModal(i:ModalSubmitInteraction){
 }
 
 function normalizeCommandJSON(command:any){if(Array.isArray(command.options)){command.options.sort((a:any,b:any)=>Number(!!b.required)-Number(!!a.required));}return command;}
-const PREFIX_ONLY_COMMANDS=new Set(['serverstats','leaderboard','zar','welcome','leave-message','nickname','rr','embed','role-info','channel-info','oda','custom','unban','unwarn','warnings','nowplaying','volume','loop','shuffle','remove','join','leave','avatar','say','rank']);
+const PREFIX_ONLY_COMMANDS=new Set(['serverstats','leaderboard','zar','welcome','leave-message','nickname','rr','embed','role-info','channel-info','oda','custom','unban','unwarn','warnings','nowplaying','volume','loop','shuffle','remove','join','leave','avatar','say','rank','kor-semender-ver']);
 for(const name of PREFIX_ONLY_COMMANDS){const command=commands.get(name);if(command)command.builder=undefined;}
 async function registerCommands(){const rest=new REST({version:'10'}).setToken(process.env.DISCORD_TOKEN!);const builders=[...new Map([...commands.values()].filter(c=>typeof c.builder==='function').map(c=>[c.name,normalizeCommandJSON(c.builder!().toJSON())])).values()];if(builders.length>100)throw new Error(`Discord slash komut sınırı aşıldı: ${builders.length}/100`);const invalid=builders.filter((b:any)=>Array.isArray(b?.options)&&b.options.some((o:any,i:number)=>o.required===true&&b.options.slice(0,i).some((p:any)=>p.required!==true)));if(invalid.length)console.warn('Komut seçenek sırası düzeltildi:',invalid.map((b:any)=>b.name).join(', '));try{if(process.env.GUILD_ID)await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID!,process.env.GUILD_ID),{body:builders});else await rest.put(Routes.applicationCommands(process.env.CLIENT_ID!),{body:builders});console.log(`${builders.length} slash komut kaydedildi.`);}catch(e){console.error('Komut kayıt hatası:',e);}}
 
