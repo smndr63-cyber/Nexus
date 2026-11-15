@@ -1,4 +1,4 @@
-# NEXUS 1.1.0 — canlı sunucu güncelleme güvenliği
+# NEXUS 1.2.0 — canlı sunucu güncelleme güvenliği
 
 ## Canlıya dağıtmadan önce
 Bu sürüm, onaylanan yeni RPG mimarisine geçiş yapar. Eski RPG karakter ilerlemesi ve eski guild RPG kayıtları bir defa sıfırlanır. Bu işlem bilinçlidir ve geri alınamaz; bu nedenle dağıtımdan önce tam veritabanı yedeği zorunludur.
@@ -8,7 +8,7 @@ Bu sürüm, onaylanan yeni RPG mimarisine geçiş yapar. Eski RPG karakter ilerl
 3. Mevcut canlı veritabanını volume içindeki `database.json` dosyasına yerleştirin.
 4. Dosyanın boş olmadığını ve sunucu ID'leri ile `users` kayıtlarını içerdiğini doğrulayın.
 5. `DATA_DIR=/app/data` ve `REQUIRE_EXISTING_DATABASE=true` ortam değişkenlerini koruyun.
-6. Yalnızca bundan sonra 1.1.0 sürümünü dağıtın. Veritabanı koruma hatası görülürse volume bağlantısını kontrol etmeden tekrar tekrar dağıtmayın.
+6. Yalnızca bundan sonra 1.2.0 sürümünü dağıtın. Veritabanı koruma hatası görülürse volume bağlantısını kontrol etmeden tekrar tekrar dağıtmayın.
 7. İlk açılıştan sonra eski RPG alanlarının temizlendiğini; coins, bank, Discord XP/seviye, mesaj/ses sayıları, bahis kayıtları, moderasyon vakaları ve sunucu ayarlarının korunduğunu doğrulayın.
 
 ## Geçiş davranışı
