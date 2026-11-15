@@ -1,0 +1,63 @@
+name: NEXUS 1.2.0 Final Package
+
+on:
+  push:
+    branches:
+      - release/nexus-1.2.0-final
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout NEXUS source
+        uses: actions/checkout@v4
+        with:
+          ref: release/nexus-1.2.0-final
+
+      - name: Checkout RPG visual assets
+        uses: actions/checkout@v4
+        with:
+          repository: smndr63-cyber/Nexus-RPG-Assets
+          ref: main
+          path: assets/rpg
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Prepare release metadata and safety fixes
+        run: node scripts/prepare-release.mjs
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Run build and complete test suite
+        run: npm test
+
+      - name: Build production output
+        run: npm run build
+
+      - name: Create release ZIP
+        run: |
+          mkdir -p release
+          zip -qr release/NEXUS-1.2.0-FINAL.zip \
+            src dist test assets/rpg data package.json package-lock.json tsconfig.json \
+            Dockerfile .dockerignore .env.example README.md INSTALL.md UPGRADE-SAFETY.md \
+            COMMANDS.md RPG-REHBER.md CHANGELOG.md RELEASE-NOTES-1.2.0.md \
+            -x "assets/rpg/.git/*" "assets/rpg/.gitattributes"
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-1.2.0-FINAL
+          path: release/NEXUS-1.2.0-FINAL.zip
+          if-no-files-found: error
+          retention-days: 14
