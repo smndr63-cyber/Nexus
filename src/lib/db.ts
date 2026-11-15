@@ -40,15 +40,12 @@ function migrateGuild(g:GuildData){
   g.config.commandRoles??={}; g.config.commandUsers??={}; g.config.logChannels??={};
   g.config.ignoredChannels??=[]; g.config.ignoredRoles??=[]; g.config.levelIgnoredChannels??=[]; g.config.levelIgnoredRoles??=[]; g.config.customCommands??={};
   g.users??={}; g.cases??=[]; g.reactionRoles??=[]; g.giveaways??=[]; g.reminders??=[]; g.customCommands??={}; g.stats??={};
-  // One-time season reset: clear RPG, inventory and betting balances.
-  // Discord progression, moderation records and guild settings remain untouched.
+  // One-time RPG schema reset: clear only RPG-specific progress.
+  // Shared wallet, bank, legacy inventory and pending bets are preserved.
+  // Pending bets are refunded safely by refundInterruptedBets() during startup.
   if((g.rpgSchemaVersion??0)<2){
     for(const u of Object.values(g.users)){
       delete u.rpg;
-      u.inventory=[];
-      u.coins=100;
-      u.bank=0;
-      delete u.activeBet;
     }
     delete g.rpg;
     g.rpgSchemaVersion=2;
