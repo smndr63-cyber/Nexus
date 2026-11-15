@@ -557,3 +557,15 @@ test('eight faith traditions each reference an existing ancient power and holy l
   for(const faith of RPG_FAITH_TRADITIONS)assert.ok(powerIds.has(faith.powerId),`${faith.id} power`);
   for(const culture of RPG_ANCIENT_CULTURES)for(const region of culture.regionIds)assert.ok(regionIds.has(region),`${culture.id} region ${region}`);
 });
+
+test('Kor Semenderi is exclusive, owner-granted, bound and absent from normal pet acquisition catalog', () => {
+  const p = profileSvc.createRpgProfile(10);
+  assert.equal(pets.listPetSpecies().some(species => species.id === 'ember_salamander'), false);
+  const grant = pets.grantExclusivePet(p, 'target-user', 'Kor Semenderi', 11);
+  assert.equal(grant.ok, true);
+  assert.equal(grant.pet.speciesId, 'ember_salamander');
+  assert.equal(grant.pet.bound, true);
+  assert.equal(grant.pet.origin, 'exclusive_owner_grant');
+  assert.equal(p.activePetId, grant.pet.id);
+  assert.equal(pets.grantExclusivePet(p, 'target-user', undefined, 12).ok, false);
+});
