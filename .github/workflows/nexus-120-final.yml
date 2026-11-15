@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - release/nexus-1.2.0-final
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -45,19 +44,53 @@ jobs:
       - name: Build production output
         run: npm run build
 
-      - name: Create release ZIP
+      - name: Package source and compiled bot
         run: |
           mkdir -p release
-          zip -qr release/NEXUS-1.2.0-FINAL.zip \
-            src dist test assets/rpg data package.json package-lock.json tsconfig.json \
+          zip -0qr release/NEXUS-1.2.0-CORE.zip \
+            src dist test data package.json package-lock.json tsconfig.json \
             Dockerfile .dockerignore .env.example README.md INSTALL.md UPGRADE-SAFETY.md \
-            COMMANDS.md RPG-REHBER.md CHANGELOG.md RELEASE-NOTES-1.2.0.md \
-            -x "assets/rpg/.git/*" "assets/rpg/.gitattributes"
+            COMMANDS.md RPG-REHBER.md CHANGELOG.md RELEASE-NOTES-1.2.0.md
 
-      - name: Upload final package
+      - name: Split original RPG assets into two verified archives
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_STORED
+          root = Path("assets/rpg")
+          files = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"})
+          assert len(files) == 385, f"Expected 385 assets, found {len(files)}"
+          for index, group in enumerate((files[:193], files[193:]), start=1):
+              with ZipFile(f"release/NEXUS-RPG-ASSETS-{index}.zip", "w", ZIP_STORED, allowZip64=True) as z:
+                  for p in group:
+                      z.write(p, arcname=f"assets/rpg/{p.name}")
+                  if index == 1:
+                      for extra in ("asset-inventory.csv", "README.md"):
+                          p = root / extra
+                          if p.exists(): z.write(p, arcname=f"assets/rpg/{p.name}")
+          print(f"Prepared {len(files)} original images in two archives.")
+          PY
+
+      - name: Upload source and compiled bot
         uses: actions/upload-artifact@v4
         with:
-          name: NEXUS-1.2.0-FINAL
-          path: release/NEXUS-1.2.0-FINAL.zip
+          name: NEXUS-1.2.0-CORE
+          path: release/NEXUS-1.2.0-CORE.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload RPG assets part 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-RPG-ASSETS-1
+          path: release/NEXUS-RPG-ASSETS-1.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload RPG assets part 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-RPG-ASSETS-2
+          path: release/NEXUS-RPG-ASSETS-2.zip
           if-no-files-found: error
           retention-days: 14
