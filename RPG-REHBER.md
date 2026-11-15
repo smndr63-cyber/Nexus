@@ -1,13 +1,14 @@
 # NEXUS RPG — Oyuncu Rehberi
 
 ## İlk adımlar
-1. `/rpg-profil` ile karakterini görüntüle.
-2. `/harita` ile açık bölgeleri incele.
-3. `/kesif` ile başlangıç kaynaklarını topla.
-4. `/gorevler` ile görevleri gör ve `/gorev-al` ile bir görev başlat.
-5. `/tarifler meslek:ormanci` benzeri komutla meslek tariflerini incele.
-6. Malzemelerin varsa `/uret` ile üretim yap.
-7. `/yaratik-izle` ile yaratık izlerini araştır; ardından `/avla` ile meydan oku.
+1. `/rpg` ile görselli NEXUS RPG ana menüsünü aç. Menüdeki butonlarla karakterini, envanterini, haritayı, görevlerini, mesleklerini ve yoldaşlarını gez. **Keşif Yap** düğmesi bulunduğun bölgede kaynak toplar.
+2. `/rpg-profil` prefix takma adı olarak korunur; slash giriş komutu `/rpg` şeklindedir.
+3. `/harita` ile açık bölgeleri incele.
+4. `/kesif` ile başlangıç kaynaklarını topla.
+5. `/gorevler` ile görevleri gör ve `/gorev-al` ile bir görev başlat.
+6. `/tarifler meslek:ormanci` benzeri komutla meslek tariflerini incele.
+7. Malzemelerin varsa `/uret` ile üretim yap.
+8. `/yaratik-izle` ile yaratık izlerini araştır; ardından `/avla` ile meydan oku.
 
 ## Meslek ve uzmanlaşma
 Her oyuncu 11 mesleğin tamamını geliştirebilir. Her meslekte üç uzmanlaşma dalı bulunur. Dalların başlangıç seviyesi 1/3'tür; yalnızca global olarak seçili ana uzmanlaşma 2/3 ve 3/3 seviyelerine ilerleyebilir. Meslek XP'si seçili dalın uzmanlaşma XP'sine de katkı sağlar. Ana dal değiştirildiğinde önceki dal 1/3'e döner; meslek seviyesi ve meslek XP'si korunur.
@@ -32,3 +33,7 @@ Pet edinmek için türün nadirliğine uygun sunu eşyası gerekir. Petleri besl
 
 ## Pazar ve grup
 Tüccar NPC’lerden temel eşyaları alabilir, nadir stokları sınırlı miktarda bulabilirsin; NPC’ye satış taban fiyatın %50’sinden yapılır. Oyuncu pazarı ilanlarında eşya satabilir; satın alma işleminde %5 pazar vergisi uygulanır. Geçici gruplar ücretsizdir, en fazla dört kişidir ve davetler iki dakika geçerlidir. Davet kabul edilmeden gruba katılım olmaz.
+
+
+## Görsel arayüz
+Ana macera ekranı, karakter, harita, görev defteri ve yoldaş sayfaları NEXUS RPG görsellerini kullanır. Menü düğmeleri yalnızca menüyü açan oyuncu tarafından kullanılabilir; başka oyuncuların oturumları değiştirilemez.
