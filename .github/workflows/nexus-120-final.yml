@@ -33,7 +33,50 @@ jobs:
       - name: Build production output
         run: npm run build
 
-      - name: Create final package and split for safe transfer
+      - name: Optimize RPG artwork without dropping assets
+        run: |
+          python3 -m venv .asset-venv
+          .asset-venv/bin/pip install --quiet Pillow
+          .asset-venv/bin/python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import csv
+
+          root = Path("assets/rpg")
+          image_files = sorted([*root.glob("*.jpg"), *root.glob("*.jpeg"), *root.glob("*.png")])
+          for source in image_files:
+              target = source.with_suffix(".webp")
+              with Image.open(source) as image:
+                  has_alpha = "A" in image.getbands() or "transparency" in image.info
+                  converted = image.convert("RGBA" if has_alpha else "RGB")
+                  converted.save(target, "WEBP", quality=88, method=6)
+              source.unlink()
+
+          inventory = root / "asset-inventory.csv"
+          if inventory.exists():
+              with inventory.open("r", encoding="utf-8-sig", newline="") as f:
+                  rows = list(csv.reader(f))
+              updated = []
+              for index, row in enumerate(rows):
+                  if index == 0 or not row:
+                      updated.append(row)
+                      continue
+                  old_name = row[0]
+                  new_path = root / Path(old_name).with_suffix(".webp").name
+                  if new_path.exists():
+                      with Image.open(new_path) as image:
+                          row[0] = new_path.name
+                          row[1] = "WEBP"
+                          row[2], row[3] = str(image.width), str(image.height)
+                          row[4] = f"{new_path.stat().st_size / 1048576:.2f}"
+                  updated.append(row)
+              with inventory.open("w", encoding="utf-8-sig", newline="") as f:
+                  csv.writer(f).writerows(updated)
+
+          print(f"Optimized {len(image_files)} RPG image assets to WebP.")
+          PY
+
+      - name: Create final package
         run: |
           mkdir -p release
           zip -qr -9 release/NEXUS-1.2.0-FINAL.zip \
@@ -41,22 +84,13 @@ jobs:
             Dockerfile .dockerignore .env.example README.md INSTALL.md UPGRADE-SAFETY.md \
             COMMANDS.md RPG-REHBER.md CHANGELOG.md
           sha256sum release/NEXUS-1.2.0-FINAL.zip > release/SHA256SUMS.txt
-          split -b 400m release/NEXUS-1.2.0-FINAL.zip release/NEXUS-PART-
+          ls -lh release/NEXUS-1.2.0-FINAL.zip
 
-      - name: Upload package part 1
+      - name: Upload final package
         uses: actions/upload-artifact@v4
         with:
-          name: NEXUS-PACKAGE-PART-1
-          path: release/NEXUS-PART-aa
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-
-      - name: Upload package part 2
-        uses: actions/upload-artifact@v4
-        with:
-          name: NEXUS-PACKAGE-PART-2
-          path: release/NEXUS-PART-ab
+          name: NEXUS-1.2.0-FINAL
+          path: release/NEXUS-1.2.0-FINAL.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
