@@ -50,7 +50,7 @@ jobs:
           zip -0qr release/NEXUS-1.2.0-CORE.zip \
             src dist test data package.json package-lock.json tsconfig.json \
             Dockerfile .dockerignore .env.example README.md INSTALL.md UPGRADE-SAFETY.md \
-            COMMANDS.md RPG-REHBER.md CHANGELOG.md RELEASE-NOTES-1.2.0.md
+            COMMANDS.md RPG-REHBER.md CHANGELOG.md
 
       - name: Split original RPG assets into two verified archives
         run: |
