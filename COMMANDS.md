@@ -1,9 +1,10 @@
-# NEXUS 1.1.0 — Komut Rehberi
+# NEXUS 1.2.0 — Komut Rehberi
 
 NEXUS hem slash (`/`) hem prefix (`!`) komutlarını destekler. Aşağıdaki RPG komutları slash üzerinden kullanılabilir.
 
 ## Karakter ve ilerleme
-- `/rpg-profil` — seviye, XP, özellikler, meslekler, ana uzmanlık, cüzdan ve pet özeti.
+- `/rpg` — görselli RPG ana menüsü. Butonlarla karakter, envanter, harita, görevler, meslekler ve yoldaşlar sayfaları arasında geçiş yapar; **Keşif Yap** düğmesi bölgeden kaynak toplar.
+- `!rpg-profil` — karakter özetinin prefix takma adı. Slash giriş komutu `/rpg` olarak sunulur.
 - `/istatistik-puan ozellik puan` — seviye atlayınca kazanılan özellik puanlarını dağıtır. Özellikler: güç, dayanıklılık, çeviklik, zekâ.
 - `/ustalik` — 100. seviye sonrası sınırsız ustalık, ustalık XP'si, puanları, unvan ve kozmetik koleksiyonunu gösterir.
 - `/uzmanlasma` — 11 meslekten birinin 3 uzmanlık dalından ana dal seçer. İlk seçim ücretsizdir; değişiklik ücretleri onaylanan artan tarifeye göre uygulanır.
