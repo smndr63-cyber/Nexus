@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-test('season reset clears RPG and betting data once while preserving Discord data', () => {
+test('season reset clears only RPG data once while preserving Discord and economy data', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-season-reset-'));
   const file = path.join(dir, 'database.json');
 
@@ -78,10 +78,10 @@ test('season reset clears RPG and betting data once while preserving Discord dat
     let user = migrated.users.player;
 
     assert.equal(user.rpg, undefined);
-    assert.deepEqual(user.inventory, []);
-    assert.equal(user.coins, 100);
-    assert.equal(user.bank, 0);
-    assert.equal(user.activeBet, undefined);
+    assert.deepEqual(user.inventory, ['legacy_item']);
+    assert.equal(user.coins, 9876);
+    assert.equal(user.bank, 5432);
+    assert.deepEqual(user.activeBet, { game: 'dice', amount: 100, created: 50 });
     assert.equal(user.xp, 1234);
     assert.equal(user.level, 12);
     assert.equal(user.messages, 345);
