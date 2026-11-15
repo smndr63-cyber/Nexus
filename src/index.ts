@@ -101,7 +101,7 @@ function simple(name:string,description:string,fn:(c:Ctx)=>Promise<any>,builder?
 function rpgImageAttachment(filename:string){
  const root=path.resolve(__dirname,'..','assets','rpg');
  const ext=path.extname(filename);
- const candidates=ext?[filename,filename.replace(/\\.(?:png|jpe?g)$/i,'.webp')]:[filename+'.webp',filename+'.jpg',filename+'.png',filename+'.jpeg'];
+ const candidates=ext?[filename,filename.replace(/\.(?:png|jpe?g)$/i,'.webp')]:[filename+'.webp',filename+'.jpg',filename+'.png',filename+'.jpeg'];
  const candidate=candidates.map(name=>path.resolve(root,name)).find(file=>file.startsWith(root+path.sep)&&fs.existsSync(file));
  if(!candidate)return undefined;
  return new AttachmentBuilder(candidate,{name:'nexus-rpg'+path.extname(candidate)});
