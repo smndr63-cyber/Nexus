@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - work/nexus-complete
   workflow_dispatch:
 
 permissions:
@@ -14,27 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout NEXUS source
+      - name: Checkout the exact pushed source revision
         uses: actions/checkout@v4
-        with:
-          ref: release/nexus-1.2.0-final
-
-      - name: Checkout RPG visual assets
-        uses: actions/checkout@v4
-        with:
-          repository: smndr63-cyber/Nexus-RPG-Assets
-          ref: main
-          path: assets/rpg
-          lfs: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Prepare release metadata and safety fixes
-        run: node scripts/prepare-release.mjs
 
       - name: Install exact dependencies
         run: npm ci
@@ -45,19 +33,38 @@ jobs:
       - name: Build production output
         run: npm run build
 
-      - name: Create release ZIP
+      - name: Create final package and split for safe transfer
         run: |
           mkdir -p release
-          zip -qr release/NEXUS-1.2.0-FINAL.zip \
+          zip -qr -9 release/NEXUS-1.2.0-FINAL.zip \
             src dist test assets/rpg data package.json package-lock.json tsconfig.json \
             Dockerfile .dockerignore .env.example README.md INSTALL.md UPGRADE-SAFETY.md \
-            COMMANDS.md RPG-REHBER.md CHANGELOG.md RELEASE-NOTES-1.2.0.md \
-            -x "assets/rpg/.git/*" "assets/rpg/.gitattributes"
+            COMMANDS.md RPG-REHBER.md CHANGELOG.md
+          sha256sum release/NEXUS-1.2.0-FINAL.zip > release/SHA256SUMS.txt
+          split -b 400m release/NEXUS-1.2.0-FINAL.zip release/NEXUS-PART-
 
-      - name: Upload final package
+      - name: Upload package part 1
         uses: actions/upload-artifact@v4
         with:
-          name: NEXUS-1.2.0-FINAL
-          path: release/NEXUS-1.2.0-FINAL.zip
+          name: NEXUS-PACKAGE-PART-1
+          path: release/NEXUS-PART-aa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload package part 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-PACKAGE-PART-2
+          path: release/NEXUS-PART-ab
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload package checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-PACKAGE-CHECKSUM
+          path: release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
