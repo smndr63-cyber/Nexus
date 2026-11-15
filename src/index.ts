@@ -872,7 +872,7 @@ async function button(i:ButtonInteraction){if(!i.guild)return;
  if(i.customId.startsWith('rpg:')){
   const [,kind,ownerId,value]=i.customId.split(':');
   if(ownerId!==i.user.id)return i.reply({content:'Bu macera menüsü yalnızca onu açan oyuncu tarafından kullanılabilir.',flags:MessageFlags.Ephemeral});
-  if(kind==='page')return i.update(rpgDashboardPayload(i.guild,i.member as GuildMember,value||'home'));
+  if(kind==='page'){const payload=rpgDashboardPayload(i.guild,i.member as GuildMember,value||'home');return i.update({...payload,attachments:[]});}
   if(kind==='action'&&value==='explore'){
    const wallet=user(i.guild.id,i.user.id);
    const profile=ensureRpgProfile(wallet.rpg);
@@ -892,7 +892,7 @@ async function button(i:ButtonInteraction){if(!i.guild)return;
    persist();
    const payload=rpgDashboardPayload(i.guild,i.member as GuildMember,'home');
    payload.embeds[0].addFields({name:'Keşif Sonucu',value:`🔎 **${getRpgItem(itemId)?.name||itemId} ×${quantity}** buldun.${professionText}`});
-   return i.update(payload);
+   return i.update({...payload,attachments:[]});
   }
  }
  if(i.customId.startsWith('spec:cancel:')){
