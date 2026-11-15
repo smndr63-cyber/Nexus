@@ -1,5 +1,6 @@
 // @ts-nocheck
 import 'dotenv/config';
+import fs from 'node:fs';
 import path from 'node:path';
 import {
  Client, GatewayIntentBits, Partials, Collection, REST, Routes, SlashCommandBuilder, ChatInputCommandInteraction,
@@ -97,15 +98,58 @@ function commandPermissionBuilder(name:string,description:string,perm?:bigint){l
 function visibleCommand(m:GuildMember,cmd:Cmd){return canUseCommand(m,cmd);}
 function simple(name:string,description:string,fn:(c:Ctx)=>Promise<any>,builder?:()=>any,aliases?:string[]){add({name,description,execute:fn,builder:builder||(()=>base(name,description)),aliases});}
 
-// RPG CORE
-simple('rpg-profil','RPG karakterinin genel durumunu gösterir.',async c=>{
- const wallet=user(c.guild.id,c.member.id); const profile=ensureRpgProfile(wallet.rpg); wallet.rpg=profile; persist();
- const level=profile.characterLevel||1; const xp=profile.characterXp||0;
- const professionLines=Object.entries(profile.professions||{}).map(([id,p])=>{const def=RPG_PROFESSIONS.find(x=>x.id===id);return `• **${def?.name||id}:** ${p.level}. seviye (${p.xp} XP)`;});
- const mainSpec=profile.mainSpecialization?RPG_PROFESSIONS.find(p=>p.id===profile.mainSpecialization!.professionId)?.specializations.find(s=>s.id===profile.mainSpecialization!.specializationId)?.name:'Seçilmedi';
+function rpgImageAttachment(filename:string){
+ const root=path.resolve(__dirname,'..','assets','rpg');
+ const candidate=path.resolve(root,filename);
+ if(!candidate.startsWith(root+path.sep)||!fs.existsSync(candidate))return undefined;
+ return new AttachmentBuilder(candidate,{name:'nexus-rpg'+path.extname(candidate)});
+}
+function rpgDashboardPayload(g:Guild,m:GuildMember,page='home'){
+ const wallet=user(g.id,m.id);
+ const profile=ensureRpgProfile(wallet.rpg);
+ wallet.rpg=profile;
+ persist();
+ const region=getRegion(profile.currentRegionId||'baslangic_duzlugu');
+ const level=profile.characterLevel||1;
  const pet=profile.pets?.find(x=>x.id===profile.activePetId);
- return reply(c,{embeds:[new EmbedBuilder().setColor(0x5865f2).setTitle('🧭 NEXUS | Maceracı Profili').setDescription(`**${c.member.displayName}**\nKarakter seviyesi: **${level}** • XP: **${xp}**\nBölge: **${profile.currentRegionId||'Bilinmiyor'}**\nGüç ${profile.stats?.strength||5} • Dayanıklılık ${profile.stats?.vitality||5} • Çeviklik ${profile.stats?.agility||5} • Zekâ ${profile.stats?.intelligence||5} • Dağıtılabilir puan ${profile.stats?.points||0}\nCüzdan: **${wallet.coins.toLocaleString('tr-TR')} ◈** • Banka: **${wallet.bank.toLocaleString('tr-TR')} ◈**\nPet: **${pet?.name||'Yok'}**\nAna uzmanlık: **${mainSpec}**\nUstalık: **${profile.masteryLevel||0}** • Ustalık XP: **${profile.masteryXp||0}** • Ustalık puanı: **${profile.masteryPoints||0}**`).addFields({name:'Meslek Gelişimi',value:professionLines.join('\n')||'Meslek verisi yok.'}).setTimestamp()]});
-});
+ const pageTitles:Record<string,string>={home:'NEXUS | Macera Merkezi',profile:'NEXUS | Karakter',inventory:'NEXUS | Envanter',map:'NEXUS | Dünya Haritası',quests:'NEXUS | Görev Defteri',professions:'NEXUS | Meslekler',pets:'NEXUS | Yoldaşlar'};
+ let description='';
+ if(page==='profile'){
+  const mainSpec=profile.mainSpecialization?RPG_PROFESSIONS.find(p=>p.id===profile.mainSpecialization!.professionId)?.specializations.find(x=>x.id===profile.mainSpecialization!.specializationId)?.name:'Seçilmedi';
+  description=`**${m.displayName}**\nKarakter seviyesi: **${level}/100** • XP: **${profile.characterXp||0}**\nUstalık: **${profile.masteryLevel||0}** • Ustalık XP: **${profile.masteryXp||0}** • Puan: **${profile.masteryPoints||0}**\nBölge: **${region?.name||profile.currentRegionId||'Bilinmiyor'}**\nGüç **${profile.stats?.strength||5}** • Dayanıklılık **${profile.stats?.vitality||5}** • Çeviklik **${profile.stats?.agility||5}** • Zekâ **${profile.stats?.intelligence||5}**\nDağıtılabilir özellik puanı: **${profile.stats?.points||0}**\nAna uzmanlık: **${mainSpec}**\nCüzdan: **${wallet.coins.toLocaleString('tr-TR')} ◈** • Banka: **${wallet.bank.toLocaleString('tr-TR')} ◈**\nAktif yoldaş: **${pet?.name||'Yok'}**`;
+ }else if(page==='inventory'){
+  const lines=(profile.itemInstances||[]).slice(0,18).map(item=>{const def=getRpgItem(item.definitionId);return `• **${def?.name||item.definitionId}** ×${item.quantity} • \`${item.id}\``;});
+  description=lines.join('\n')||'Envanterin şu anda boş.';
+ }else if(page==='map'){
+  description=getWorldMap(profile).slice(0,15).map(r=>`${r.current?'📍':r.discovered?'🗺️':r.unlocked?'🔓':'🔒'} **${r.name}** — Tehdit ${r.dangerLevel}/8 • Önerilen seviye ${r.recommendedLevel}${r.unlocked?'':' • Kilitli'}`).join('\n');
+ }else if(page==='quests'){
+  const available=availableQuests(profile).slice(0,8).map(q=>`🟢 **${q.name}** — ${q.description}`).join('\n');
+  const active=Object.values(profile.quests||{}).filter((q:any)=>q.status==='active').map((q:any)=>`🟡 **${q.questId}** — ${Object.values(q.progress||{}).reduce((a:any,b:any)=>a+b,0)} hedef ilerlemesi`).join('\n');
+  description=`**Devam eden görevler**\n${active||'Aktif görevin yok.'}\n\n**Alınabilir görevler**\n${available||'Şu anda yeni görev bulunmuyor.'}`;
+ }else if(page==='professions'){
+  description=RPG_PROFESSIONS.map(p=>{const state=profile.professions?.[p.id];return `• **${p.name}** — ${state?.level||1}. seviye • ${state?.xp||0} XP • Ustalık ${state?.mastery||0}`;}).join('\n');
+ }else if(page==='pets'){
+  const pets=profile.pets||[];
+  description=pets.map(p=>`${p.id===profile.activePetId?'⭐':'🐾'} **${p.name}** — Seviye ${p.level} • Bağ ${p.bond}/100 • Durum: ${p.status}`).join('\n')||'Henüz bir yoldaş edinmedin.';
+ }else{
+  description=`Hoş geldin **${m.displayName}**!\n\n**${region?.name||'Başlangıç Düzlüğü'}**\n${region?.description||'Yeni maceran burada başlıyor.'}\n\n⚔️ Karakter seviyesi: **${level}**\n🪙 Cüzdan: **${wallet.coins.toLocaleString('tr-TR')} ◈**\n🏦 Banka: **${wallet.bank.toLocaleString('tr-TR')} ◈**\n🐾 Yoldaş: **${pet?.name||'Henüz yok'}**\n\nAşağıdaki düğmelerle karakterini, envanterini, haritayı, görevlerini, mesleklerini ve yoldaşlarını yönetebilirsin.`;
+ }
+ const embedBuilder=new EmbedBuilder().setColor(0x5865f2).setTitle(pageTitles[page]||pageTitles.home).setDescription(description.slice(0,4000)).setFooter({text:'NEXUS RPG • Seçimlerin ve ilerlemen hesabına kaydedilir'}).setTimestamp();
+ const images:Record<string,string>={home:'ui_main_menu_background_001.jpg',profile:'ui_character_background_001.jpg',inventory:'ui_character_background_001.jpg',map:'world_map_background_001.jpg',quests:'ui_quest_journal_background_001.jpg',professions:'ui_character_background_001.jpg',pets:'ui_party_background_001.png'};
+ const attachment=rpgImageAttachment(images[page]||images.home);
+ if(attachment)embedBuilder.setImage('attachment://'+attachment.name);
+ const pages:[string,string,ButtonStyle][]=[['home','🏠 Ana Sayfa',ButtonStyle.Primary],['profile','🧙 Karakter',ButtonStyle.Secondary],['inventory','🎒 Envanter',ButtonStyle.Secondary],['map','🗺️ Harita',ButtonStyle.Secondary],['quests','📜 Görevler',ButtonStyle.Secondary],['professions','⚒️ Meslekler',ButtonStyle.Secondary],['pets','🐾 Yoldaşlar',ButtonStyle.Secondary]];
+ const rows:ActionRowBuilder<ButtonBuilder>[]=[];
+ rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...pages.slice(0,5).map(([key,label,style])=>new ButtonBuilder().setCustomId(`rpg:page:${m.id}:${key}`).setLabel(label).setStyle(page===key?ButtonStyle.Success:style))));
+ rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...pages.slice(5).map(([key,label,style])=>new ButtonBuilder().setCustomId(`rpg:page:${m.id}:${key}`).setLabel(label).setStyle(page===key?ButtonStyle.Success:style)),new ButtonBuilder().setCustomId(`rpg:action:${m.id}:explore`).setLabel('🔎 Keşif Yap').setStyle(ButtonStyle.Primary)));
+ return {embeds:[embedBuilder],components:rows,files:attachment?[attachment]:[]};
+}
+
+// RPG CORE
+simple('rpg','NEXUS RPG ana menüsünü açar.',async c=>{
+ const payload=rpgDashboardPayload(c.guild,c.member,'home');
+ return c.interaction?c.interaction.reply(payload):c.message?.reply(payload);
+},()=>base('rpg','NEXUS RPG ana menüsünü açar.'),['rpg-profil']);
 simple('envanter','RPG envanterini gösterir.',async c=>{
  const wallet=user(c.guild.id,c.member.id);const profile=ensureRpgProfile(wallet.rpg);wallet.rpg=profile;persist();
  const lines=(profile.itemInstances||[]).slice(0,35).map(item=>{const def=getRpgItem(item.definitionId);return `• **${def?.name||item.definitionId}** ×${item.quantity} • Kimlik: \`${item.id}\``;});
@@ -818,11 +862,37 @@ function isRoomOwner(i:ButtonInteraction|UserSelectMenuInteraction|ModalSubmitIn
 client.on('interactionCreate',async i=>{try{if(i.isButton())return await button(i);if(i.isStringSelectMenu())return await select(i);if(i.isUserSelectMenu())return await roomUserSelect(i);if(i.isRoleSelectMenu())return await permissionRoleSelect(i);if(i.isModalSubmit())return await roomModal(i);if(!i.isChatInputCommand()||!i.guild)return;const cmd=commands.get(i.commandName);if(!cmd)return;if(!canUseCommand(i.member as GuildMember,cmd))return i.reply({content:'❌ Bu komut için gerekli yetkiye sahip değilsin.',flags:MessageFlags.Ephemeral});try{await cmd.execute({interaction:i,member:i.member as GuildMember,guild:i.guild,args:[]});await log(i.guild,'SLASH KOMUT',`${i.user.tag}: /${i.commandName}`,'command');}catch(e){console.error(e);if(i.replied||i.deferred)i.followUp({content:'❌ Komut çalışırken hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});else i.reply({content:'❌ Komut çalışırken hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});}}catch(error){console.error('interactionCreate hatası:',error);if('isRepliable' in i && i.isRepliable() && !i.replied && !i.deferred){await i.reply({content:'❌ İşlem sırasında beklenmeyen bir hata oluştu.',flags:MessageFlags.Ephemeral}).catch(()=>{});}}});
 function getHelpDefs(m:GuildMember){
  const defs:[string,string,ButtonStyle, string][]=[['help:general','🌐 Genel',ButtonStyle.Primary,'general'],['help:moderation','🛡️ Moderasyon',ButtonStyle.Danger,'moderation'],['help:management','⚙️ Yönetim',ButtonStyle.Secondary,'management'],['help:stats','📊 Seviye & İstatistik',ButtonStyle.Success,'stats'],['help:economy','💰 Ekonomi',ButtonStyle.Success,'economy'],['help:fun','🎉 Eğlence',ButtonStyle.Primary,'fun']];
- const groups:Record<string,string[]>={general:['ping','help','sunucu','uye','avatar','join','play','queue','nowplaying','pause','resume','skip','stop','volume','loop','shuffle','remove','leave'],moderation:['purge','kick','ban','timeout','untimeout','warn','warnings','slowmode','lock','unlock'],management:['prefix','ignore','level-ignore','seviye-kanal','seviye-sifirla','autorole','rolver','rolal','role-info','channel-info','özel-kanal','tempvoice','custom','yetki','ticket','say','leave-message'],stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats','uzmanlasma'],economy:['ekonomi','balance','daily','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler','paraekle'],fun:['anket','öneri','remind','afk','oda']};
+ const groups:Record<string,string[]>={general:['ping','help','sunucu','uye','avatar','join','play','queue','nowplaying','pause','resume','skip','stop','volume','loop','shuffle','remove','leave'],moderation:['purge','kick','ban','timeout','untimeout','warn','warnings','slowmode','lock','unlock'],management:['prefix','ignore','level-ignore','seviye-kanal','seviye-sifirla','autorole','rolver','rolal','role-info','channel-info','özel-kanal','tempvoice','custom','yetki','ticket','say','leave-message'],stats:['profil','rank','seviye-top','mesaj-top','ses-top','leaderboard','stats','serverstats','uzmanlasma','rpg'],economy:['ekonomi','balance','daily','deposit','withdraw','pay','coinflip','dice','zar','slots','blackjack','zenginler','paraekle'],fun:['anket','öneri','remind','afk','oda']};
  return defs.filter(([, , ,cat])=>groups[cat].some(n=>{const c=commands.get(n);return c&&visibleCommand(m,c);})).map(([id,label,style])=>[id,label,style] as [string,string,ButtonStyle]);
 }
 
 async function button(i:ButtonInteraction){if(!i.guild)return;
+ if(i.customId.startsWith('rpg:')){
+  const [,kind,ownerId,value]=i.customId.split(':');
+  if(ownerId!==i.user.id)return i.reply({content:'Bu macera menüsü yalnızca onu açan oyuncu tarafından kullanılabilir.',flags:MessageFlags.Ephemeral});
+  if(kind==='page')return i.update(rpgDashboardPayload(i.guild,i.member as GuildMember,value||'home'));
+  if(kind==='action'&&value==='explore'){
+   const wallet=user(i.guild.id,i.user.id);
+   const profile=ensureRpgProfile(wallet.rpg);
+   const region=getRegion(profile.currentRegionId||'baslangic_duzlugu');
+   if(!region)return i.reply({content:'Bulunduğun bölge yüklenemedi.',flags:MessageFlags.Ephemeral});
+   const candidates=region.resources.filter(id=>!!getRpgItem(id));
+   if(!candidates.length)return i.reply({content:'Bu bölgede keşfedilebilir kaynak bulunmuyor.',flags:MessageFlags.Ephemeral});
+   const itemId=candidates[Math.floor(Math.random()*candidates.length)];
+   const quantity=1+Math.floor(Math.random()*2);
+   const result=addItem(profile,itemId,quantity,`exploration:${region.id}`);
+   if(!result.ok)return i.reply({content:'Kaynak envantere eklenemedi.',flags:MessageFlags.Ephemeral});
+   const profession=RPG_PROFESSIONS.find(p=>p.primaryResources.includes(itemId));
+   let professionText='';
+   if(profession){const gained=addProfessionXp(profile,profession.id,8+quantity*2);professionText=` • ${profession.name} +${gained?.gained||0} meslek XP`;}
+   for(const [questId,q] of Object.entries(profile.quests||{}))if(q.status==='active'){const qr=advanceQuest(profile,questId,'collect',itemId,quantity);if(qr.ok&&qr.completed&&qr.rewards)wallet.coins+=qr.rewards.coins;}
+   wallet.rpg=profile;
+   persist();
+   const payload=rpgDashboardPayload(i.guild,i.member as GuildMember,'home');
+   payload.embeds[0].addFields({name:'Keşif Sonucu',value:`🔎 **${getRpgItem(itemId)?.name||itemId} ×${quantity}** buldun.${professionText}`});
+   return i.update(payload);
+  }
+ }
  if(i.customId.startsWith('spec:cancel:')){
   const sessionId=i.customId.split(':')[2];
   const session=specializationSessions.get(sessionId);
